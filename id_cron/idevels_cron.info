@@ -1,0 +1,5 @@
+; $Id$
+name = idevels cron
+description = cron
+core = 7.x
+package = idevels
