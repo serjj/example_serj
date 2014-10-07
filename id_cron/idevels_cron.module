@@ -1,0 +1,626 @@
+<?php
+
+/**
+ * @file
+ * idevels_cron  module.
+ */
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function idevels_cron_cron_queue_info() {
+  if (date('N') != 7) {
+    $queue['check_schedule'] = array(
+      'worker callback' => 'idevels_cron_check_schedules',
+      'time' => 5,
+    );
+  }
+  $queue['send_mail'] = array(
+    'worker callback' => 'idevels_cron_send_mail',
+    'time' => 3,
+  );
+  $queue['last_news'] = array(
+    'worker callback' => 'idevels_cron_create_news',
+    'time' => 3,
+  );
+  $queue['convert_video'] = array(
+    'worker callback' => 'idevels_cron_convert_video',
+    'time' => 40,
+  );
+  return $queue;
+}
+
+/**
+ * Implements hook_cronapi().
+ */
+function idevels_cron_cronapi($op, $job = NULL) {
+  switch ($op) {
+
+    case 'list':
+      return array(
+        'idevels_cron_queue_last_comments_themes' => t('Last comments in themes'),
+        'idevels_cron_queue_mail'                 => t('Send mail'),
+        'idevels_cron_queue_schedules'            => t('Check users lecture for today'),
+        'idevels_cron_create_video_queue'         => t('Queue for convert video'),
+      );
+
+    case 'rule':
+      if ($job == 'idevels_cron_queue_last_comments_themes') {
+        return '0 */1 * * *';
+      }
+      if ($job == 'idevels_cron_queue_mail') {
+        return '0 5 * * *';
+      }
+      if ($job == 'idevels_cron_queue_schedules') {
+        return '0 0 * * *';
+      }
+      if ($job == 'idevels_cron_create_video_queue') {
+        return '*/20 * * * *';
+      }
+  }
+}
+
+/**
+ * Function create queue for last comment themes.
+ */
+function idevels_cron_queue_last_comments_themes() {
+
+  // Select all themes.
+  $themes = db_select('node', 'n')
+  ->condition('n.type', 'group_content')
+  ->fields('n', array('nid'))
+  ->execute()
+  ->fetchAll();
+  if ($themes) {
+    foreach ($themes as $theme) {
+      $node = node_load($theme->nid);
+
+      // Create array of users for all theme if it have comment for last hour.
+      if ((REQUEST_TIME - $node->last_comment_timestamp) <= 3600) {
+        $group_audience = field_get_items('node', $node, 'group_audience');
+        $group_members = idevels_cron_og_load_members($group_audience[0]['gid']);
+        foreach ($group_members as $group_member) {
+          $members[] = $group_member->etid;
+        }
+        foreach ($members as $key => $val) {
+          $users = user_load($val);
+          if (isset($users->roles[3])) {
+            unset($members[$key]);
+          }
+        }
+
+        // Added all users who have role admin.
+        $admins = db_select('users_roles', 'u')
+          ->condition('u.rid', 3)
+          ->fields('u', array('uid'))
+          ->execute()
+          ->fetchAll();
+        foreach ($admins as $admin) {
+          $members[] = $admin->uid;
+        }
+        $theme_nid[$node->nid] = $members;
+      }
+    }
+  }
+
+  // Create queue.
+  if (isset($theme_nid)) {
+    $queue = DrupalQueue::get('last_news');
+    $queue->createQueue();
+    foreach ($theme_nid as $k => $v) {
+      $queue->createItem(array($k => $v));
+    }
+  }
+}
+
+/**
+ * Function created news who comment group_content.
+ */
+function idevels_cron_create_news($item) {
+  global $language;
+  foreach ($item as $k => $v) {
+
+    // Select all comments for curent theme.
+    $comments = db_select('comment', 'c')
+      ->condition('c.nid', $k)
+      ->fields('c', array('cid'))
+      ->execute()
+      ->fetchAll();
+    $topic = node_load($k);
+    foreach ($v as $users) {
+
+      // Check when user last visit curent theme.
+      $last_visit_node = idevels_cron_last_visit_node($k, $users);
+      $authors = '';
+
+      // Create array of comments authors.
+      foreach ($comments as $c) {
+        $comment = comment_load($c->cid);
+        if ($comment->created > $last_visit_node && (REQUEST_TIME - $comment->created) <= 3600) {
+          $authors[$comment->uid] = $comment->uid;
+        }
+      }
+
+      // Create body of node depending of count new comments.
+      if ($authors) {
+        if (count($authors) > 3) {
+          $count = count($authors) - 3;
+          $authors_all = array_chunk($authors, 3);
+          $author = l(user_load($authors_all[0][0])->name, 'user/' . $authors_all[0][0]) . ', ' . l(user_load($authors_all[0][1])->name, 'user/' . $authors_all[0][1]) . ', ' . l(user_load($authors_all[0][2])->name, 'user/' . $authors_all[0][2]);
+          $body = t('!authors and !count more peoples reply to the topic "!topic"', array('!authors' => $author, '!topic' => l($topic->title, 'node/' . $topic->nid), '!count' => $count));
+        }
+        else {
+          $author = '';
+          foreach ($authors as $a) {
+            $author .= l(user_load($a)->name, 'user/' . $a) . ', ';
+          }
+          $body = t('!authors reply to the topic "!topic"', array('!authors' => rtrim($author, ', '), '!topic' => l($topic->title, 'node/' . $topic->nid)));
+        }
+
+        // Select group picture for node responded_to_topics.
+        $group_audience = field_get_items('node', $topic, 'group_audience');
+        $og = og_load($group_audience[0]['gid']);
+        $og_node = node_load($og->etid);
+        $field_image = field_get_items('node', $og_node, 'field_image');
+        $og_picture = $field_image[0];
+
+        // Create node of type responded_to_topics.
+        $node = new stdClass();
+        $node->uid = $users;
+        $node->title = t('Answers in theme "!theme"', array('!theme' => $topic->title));
+        $node->type = 'responded_to_topics';
+        $node->comment  = 0;
+        $field_theme_lang = field_language('node', $node, 'field_theme');
+        $node->field_theme[$field_theme_lang][0]['nid'] = $topic->nid;
+        $node->language = $language->language;
+        $body_lang = field_language('node', $node, 'body');
+        $node->body[$body_lang][0]['value']  = $body;
+        $node->body[$body_lang][0]['format'] = 'full_html';
+        $field_image_lang = field_language('node', $node, 'field_image');
+        $node->field_image[$field_image_lang][0] = $og_picture;
+        node_save($node);
+      }
+    }
+  }
+}
+
+/**
+ * Function return last user visit node.
+ */
+function idevels_cron_last_visit_node($nid, $uid) {
+  return db_select('history', 'h')
+    ->condition('uid', $uid)
+    ->condition('nid', $nid)
+    ->fields('h', array('timestamp'))
+    ->execute()
+    ->fetchField();
+}
+
+/**
+ * Function return all members in group.
+ */
+function idevels_cron_og_load_members($gid) {
+  return db_select('og_membership', 'o')
+    ->condition('o.entity_type', 'user')
+    ->condition('o.gid', $gid)
+    ->fields('o', array('etid'))
+    ->execute()
+    ->fetchAll();
+}
+
+/**
+ * Function creates a queue for sending mail.
+ */
+function idevels_cron_queue_mail() {
+  $date = new DateTime();
+
+  // Select all users who have lectures for today.
+  $query = db_select('field_data_field_schedule', 'f');
+  $query->innerJoin('schedule', 's', 's.sid = f.entity_id');
+  $query->condition('f.entity_type', 'schedule');
+  $query->where("FROM_UNIXTIME(f.field_schedule_url, '%y%m%d') = :timestamp", array(':timestamp' => $date->format('ymd')));
+  $query->groupBy('s.user');
+  $query->fields('s', array('user'));
+  $result = $query->execute();
+
+  foreach ($result as $r) {
+
+    // Chois lecture user from schedule today and formation array to the output.
+    $query = db_select('field_data_field_schedule', 'f');
+    $query->innerJoin('schedule', 's', 's.sid = f.entity_id');
+    $query->condition('s.user', $r->user);
+    $query->condition('f.entity_type', 'schedule');
+    $query->fields('f', array('field_schedule_url', 'field_schedule_title'));
+    $result = $query->execute();
+
+    $count_lectures = 1;
+    $lecture_descr = '';
+    foreach ($result as $l) {
+      if (date('d.m.Y', $l->field_schedule_url) == date('d.m.Y')) {
+        $node = node_load($l->field_schedule_title);
+        $node_descr = field_get_items('node', $node, 'field_tdescr');
+        $timetable_descr = $node_descr[0]['value'];
+        $course_id = field_get_items('node', $node, 'field_course_id');
+        $course = node_load($course_id[0]['nid']);
+        $course_title = t('!course. Task for:!date', array('!course' => $course->title, '!date' => date('d.m.Y')));
+        $lecture_descr .= '<p style="font-weight: bold; text-align: center;">' . t('Lection !count.</p>!descr', array('!count' => $count_lectures, '!descr' => $timetable_descr));
+
+        $count_lectures++;
+      }
+    }
+    $user[$r->user][0] = $course_title;
+    $user[$r->user][1] = $lecture_descr;
+  }
+
+  // Create queue.
+  $queue = DrupalQueue::get('send_mail');
+  $queue->createQueue();
+  foreach ($user as $u => $m) {
+    $queue->createItem(array($u => $m));
+  }
+}
+
+
+/**
+ * Function send mail.
+ */
+function idevels_cron_send_mail($item) {
+  foreach ($item as $u => $m) {
+    $user_full = user_load($u);
+    $to = $user_full->mail;
+    drupal_mail('system', 'mail', $to, language_default(), array(
+      'context' => array(
+        'subject' => $m[0],
+        'message' => $m[1],
+      ),
+    ));
+  }
+}
+
+/**
+ * Implements hook_queue_system_cron().
+ */
+function idevels_cron_queue_system_cron() {
+
+  // Choice of nodes that were published and created more than an one hours ago.
+  $last = db_select('node', 'n')
+    ->fields('n', array('nid', 'type', 'title'))
+    ->condition('n.type', array('group_content', 'sdo_video', 'sdo_file', 'sdo_lecture', 'sdo_audio'))
+    ->condition('n.status', 1)
+    ->condition('n.created', mktime(date('G') - 1), '>')
+    ->execute()
+    ->fetchAll();
+
+  foreach ($last as $l) {
+    $course = array('sdo_video', 'sdo_file', 'sdo_lecture', 'sdo_audio');
+    if (in_array($l->type, $course)) {
+
+      // Select parent lecture nid and title.
+      $querys = db_select('field_revision_field_parent_lecture', 'f');
+      $querys->innerJoin('node', 'n', 'n.nid = f.field_parent_lecture_nid');
+      $querys->condition('f.entity_type', 'node');
+      $querys->condition('f.entity_id ', $l->nid);
+      $querys->fields('n', array('nid', 'title'));
+      $parent_lecture = $querys->execute()->fetchAll();
+      foreach ($parent_lecture as $p) {
+        $parent_lecture_title = $p->title;
+        $parent_lecture_nid = $p->nid;
+      }
+
+      // Select schedule for user.
+      $last_parent_lecture = search_parent_lecture($l->nid);
+      $query = db_select('field_data_field_schedule', 'f');
+      $query->innerJoin('schedule', 's', 's.sid = f.entity_id');
+      $query->condition('f.entity_type', 'schedule');
+      $query->condition('f.field_schedule_url', REQUEST_TIME, '<=');
+      $query->condition('f.field_schedule_title', $last_parent_lecture);
+      $query->fields('s', array('user'));
+      $users = $query->execute();
+      foreach ($users as $u) {
+        $value = db_select('field_revision_field_in_course', 'f')
+          ->fields('f', array('field_in_course_value'))
+          ->condition('f.entity_type', 'user')
+          ->condition('f.entity_id', $u->user)
+          ->execute()
+          ->fetchAssoc();
+        if (isset($value['field_in_course_value']) && !empty($value['field_in_course_value'])) {
+
+          // Select user name and email.
+          if ($value['field_in_course_value'] == 1) {
+            $acaunt = db_select('users', 'u')
+              ->fields('u', array('name', 'mail'))
+              ->condition('u.uid', $u->user)
+              ->execute()
+              ->fetchAssoc();
+
+            // Creating of the message for a user about new eveNt.
+            $text = t('Hallo, !name ', array('!name' => $acaunt['name']));
+            if (isset($parent_lecture_title)) {
+              $text .= t('In lecture !link', array('!link' => l($parent_lecture_title, 'node/' . $parent_lecture_nid)));
+              switch ($l->type) {
+
+                case 'sdo_video':
+                  $text .= t('added new video !titla', array('!titla' => $l->title));
+                  break;
+
+                case 'sdo_audio':
+                  $text .= t('added new audio !titla', array('!titla' => $l->title));
+                  break;
+
+                case 'sdo_file':
+                  $text .= t('added new file !titla', array('!titla' => $l->title));
+                  break;
+
+                case 'sdo_lecture':
+                  $text .= t('added new lecture !titla', array('!titla' => l($l->title, 'node/' . $l->nid)));
+                  break;
+              }
+              $sdo_notification = array(
+                'uid'     => $u->user,
+                'mail'    => $acaunt['mail'],
+                'subject' => t('Notify on new material in training courses that you have been passed or are going through right now.'),
+                'text'    => $text,
+                'date'    => REQUEST_TIME,
+              );
+            }
+          }
+        }
+      }
+    }
+    else {
+
+      // Creating of the message for a user about new discussion in group.
+      // Select lable, gid and etid in all group.
+      $query = db_select('og', 'o');
+      $query->innerJoin('og_membership', 'm', 'o.gid = m.gid');
+      $query->condition('m.entity_type', 'node');
+      $query->condition('m.etid', $l->nid);
+      $query->fields('o', array('label', 'gid', 'etid'));
+      $group = $query->execute()->fetchAssoc();
+
+      // Select all users carent group.
+      $users_group = db_select('og_membership', 'o')
+        ->fields('o', array('etid'))
+        ->condition('o.entity_type', 'user')
+        ->condition('o.gid', $group['gid'])
+        ->condition('o.state', 1)
+        ->execute()
+        ->fetchAll();
+      foreach ($users_group as $u_g) {
+        $value = db_select('field_revision_field_in_groups', 'f')
+          ->fields('f', array('field_in_groups_value'))
+          ->condition('f.entity_type', 'user')
+          ->condition('f.entity_id', $u_g->etid)
+          ->execute()
+          ->fetchAssoc();
+
+        // Notify on new discussions in the groups.
+        if (isset($value['field_in_groups_value']) && !empty($value['field_in_groups_value'])) {
+          if ($value['field_in_groups_value'] == 1) {
+            $acaunt = db_select('users', 'u')
+              ->fields('u', array('name', 'mail'))
+              ->condition('u.uid', $u_g->etid)
+              ->execute()
+              ->fetchAssoc();
+            $text  = t('Hallo, !name', array('!name' => $acaunt['name']));
+            $text .= t('In group !link', array('!link' => l($group['label'], 'node/' . $group['etid'])));
+            $text .= t('added discution !link', array('!link' => l($l->title, 'node/' . $l->nid)));
+            $sdo_notification = array(
+              'uid'     => $u_g->etid,
+              'mail'    => $acaunt['mail'],
+              'subject' => t('Notify on new discussions in the groups.'),
+              'text'    => $text,
+              'date'    => REQUEST_TIME,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  // Select new message created one hours ago.
+  $query = db_select('pm_message', 'm');
+  $query->innerJoin('pm_index', 'i', 'm.mid = i.mid');
+  $query->condition('m.timestamp', mktime(date('G') - 1), '>');
+  $query->condition('i.is_new', 1);
+  $query->fields('m', array('author', 'subject', 'timestamp'));
+  $query->fields('i', array('recipient'));
+  $new_masseges = $query->execute()->fetchAll();
+  foreach ($new_masseges as $m) {
+    if ($m->author != $m->recipient) {
+      $acaunt = db_select('users', 'u')
+        ->fields('u', array('name', 'mail'))
+        ->condition('u.uid', $m->recipient)
+        ->execute()
+        ->fetchAssoc();
+      $author = db_select('users', 'u')
+        ->fields('u', array('name'))
+        ->condition('u.uid', $m->recipient)
+        ->execute()
+        ->fetchAssoc();
+
+      // Output text message.
+      $text  = t('Hallo, !name ', array('!name' => $acaunt['name']));
+      $text .= t('You have new privat massege in theme !subject', array('!subject' => $m->subject));
+      $text .= t('from author !name ', array('!name' => $author['name']));
+      $sdo_notification = array(
+        'uid'     => $acaunt['name'],
+        'mail'    => $acaunt['mail'],
+        'subject' => t('Notify about a new personal message.'),
+        'text'    => $text,
+        'date'    => REQUEST_TIME,
+      );
+    }
+  }
+}
+
+/**
+ * Add all schedules to queue.
+ */
+function idevels_cron_queue_schedules() {
+  $schedules = db_select('schedule', 'schedule')
+    ->fields('schedule')
+    ->execute()
+    ->fetchAll();
+  $queue = DrupalQueue::get('check_schedule');
+  $queue->createQueue();
+  foreach ($schedules as $schedule) {
+    $schedules_group[$schedule->user][] = $schedule->sid;
+  }
+  foreach ($schedules_group as $k => $v) {
+    $queue->createItem(array($k => $v));
+  }
+}
+
+/**
+ * Implements schedules to queue.
+ */
+function idevels_cron_check_schedules($item) {
+
+  foreach ($item as $k => $v) {
+    $date = new DateTime();
+    $date->modify('-1 day');
+
+    // Select lecture was modified ine day ago.
+    $yesterday_lectures = db_select('field_data_field_schedule', 'schedule')
+      ->fields('schedule', array('field_schedule_title', 'field_schedule_url'))
+      ->condition('schedule.entity_id', $v, 'IN')
+      ->condition('schedule.entity_type', 'schedule')
+      ->where("FROM_UNIXTIME(schedule.field_schedule_url, '%Y%m%d') = :timestamp", array(':timestamp' => $date->format('Ymd')))
+      ->orderBy('schedule.field_schedule_url', 'ASC')
+      ->execute()
+      ->fetchAll();
+
+    watchdog('idevels_cron', print_r($yesterday_lectures, 1));
+
+    $lecture_nids = array();
+    $time_min = '';
+    $not_resolved = FALSE;
+    if ($yesterday_lectures) {
+      foreach ($yesterday_lectures as $lecture) {
+        $resolved = db_select('field_data_field_resolved', 'resolved')
+          ->fields('resolved', array('field_resolved_nid'))
+          ->condition('resolved.entity_id', $k)
+          ->condition('resolved.entity_type', 'user')
+          ->condition('resolved.field_resolved_nid', $lecture->field_schedule_title)
+          ->execute()
+          ->fetchField();
+      }
+      if (!$time_min || $time_min > $lecture->field_schedule_url) {
+        $time_min = $lecture->field_schedule_url;
+      }
+      if (!$resolved) {
+        $not_resolved = TRUE;
+      }
+      else {
+        $lecture_nids[] = $lecture;
+      }
+    }
+    if ($not_resolved == TRUE) {
+      db_update('field_data_field_schedule')
+        ->expression('field_schedule_url', 'field_schedule_url + :day', array(':day' => 86400))
+        ->condition('field_schedule_title', ($lecture_nids) ? $lecture_nids : array(0), 'NOT IN')
+        ->condition('entity_id', $v, 'IN')
+        ->condition('entity_type', 'schedule')
+        ->condition('field_schedule_url', $time_min, '>=')
+        ->execute();
+    }
+  }
+}
+
+
+/**
+ * Add video for convert.
+ */
+function idevels_cron_create_video_queue() {
+
+  // Select video from sdo_lecture.
+  $query = db_select('node', 'n');
+  $query->condition('type', array('sdo_lecture'));
+  $query->join('field_data_field_video', 'fv', 'fv.entity_id = n.nid');
+  $query->join('file_managed', 'ff', 'fv.field_video_fid = ff.fid');
+  $query->fields('ff', array('filename', 'fid', 'uri'));
+  $query->addField('n', 'nid');
+  $query->condition('ff.filemime', 'video/x-flv', '<>');
+  $query->orderBy('ff.timestamp', 'DESC');
+  $query->range(0, 10);
+  $query = $query->execute()->fetchAll();
+
+
+   if (!empty($query)) {
+    // Load queue.
+    $queue = DrupalQueue::get('convert_video');
+    // Add items to queue
+    foreach ($query as $v) {
+      $queue->createItem($v);
+    }
+  }
+
+  $queue = DrupalQueue::get('convert_video');
+  $queue->deleteQueue();
+}
+
+/**
+ * Queue callback for convert video.
+ */
+function idevels_cron_convert_video($value) {
+  $queue = DrupalQueue::get('convert_video');
+
+  $queue->deleteQueue();
+  if (isset($value->nid) || empty($value->nid)) {
+    // Get node and file.
+    $node = node_load($value->nid);
+    $video_object = file_load($value->fid);
+    $upload_file_name = $value->filename;
+
+    // Get file name without expansion and expansion.
+    $pos_dot = strrpos($upload_file_name, '.');
+    $file_name = substr($upload_file_name, 0, $pos_dot);
+    $file_expansion = substr($upload_file_name, $pos_dot + 1);
+
+    // Get full file path.
+    $real_path = realpath(dirname($upload_file_name));
+    $upload_file = "{$real_path}/sites/default/files/{$upload_file_name}";
+    $flv_file = "{$real_path}/sites/default/files/{$file_name}.flv";
+    $flv_dir_path = "{$file_name}.flv";
+
+    // Convert video.
+    exec("ffmpeg -i {$upload_file} -f flv -ac 1 {$flv_file}", $output);
+
+    // Create file object for new converted file.
+    $flv_file_uri = file_build_uri($flv_dir_path);
+
+
+    $flv_file_object = (object) array(
+      LANGUAGE_NONE => 1,
+      'uri'         => $flv_file_uri . 'buu',
+      'filename'    => basename($flv_file_uri),
+      'filemime'    => file_get_mimetype($flv_file_uri),
+      'status'      => TRUE,
+      'type'        => 'video',
+      'timestamp'   => REQUEST_TIME,
+      'filesize'    => filesize("sites/default/files/{$file_name}.flv"),
+      'display'     => 1,
+     );
+
+    // Save new flv file.
+    $flv = file_save($flv_file_object);
+    // Update node field.
+    db_update('field_data_field_video')
+      ->fields(array('field_video_fid' => $flv->fid))
+      ->condition('entity_id', $node->nid, '=')
+      ->condition('entity_type', $node->type, '=')
+      ->execute();
+
+    // Update node revision.
+    db_update('field_revision_field_video')
+      ->fields(array('field_video_fid' => $flv->fid))
+      ->condition('entity_id', $node->nid, '=')
+      ->condition('entity_type', $node->type, '=')
+      ->execute();
+
+    // Delete old not converted file.
+    file_delete($video_object, TRUE);
+  }
+  drupal_flush_all_caches();
+}
