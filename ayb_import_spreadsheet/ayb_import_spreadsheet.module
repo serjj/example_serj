@@ -1,0 +1,676 @@
+<?php
+
+/**
+ * @file
+ * All Years Baltics custom module for importing google spreadsheet documents as array format
+ * Using Zend library (1.x version) and additional Google_Spreadsheet.php class helper.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function ayb_import_spreadsheet_menu() {
+  $items = array();
+
+  $items['admin/config/ayb/spreadsheet'] = array(
+    'title'            => 'Import spreadsheet',
+    'description'      => 'Import new data from google spreadsheet',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('spreadsheet_settings_form'),
+    'access arguments' => array('administer site configuration'),
+  );
+
+  $items['admin/config/ayb/spreadsheet/settings'] = array(
+    'title'            => 'Google spreadsheet settings',
+    'description'      => 'Google spreadsheet main settings',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('spreadsheet_settings_form'),
+    'access arguments' => array('administer site configuration'),
+    'type'             => MENU_DEFAULT_LOCAL_TASK,
+  );
+
+  $items['admin/config/ayb/spreadsheet/import'] = array(
+    'title'            => 'Import spreadsheet',
+    'description'      => 'Import new data from google spreadsheet',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('spreadsheet_import_form'),
+    'access arguments' => array('administer site configuration'),
+    'type'             => MENU_LOCAL_TASK,
+  );
+
+  $items['admin/config/ayb/spreadsheet/room_title'] = array(
+    'title'            => 'Settings room title',
+    'description'      => 'Settings room title from google spreadsheet',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('spreadsheet_room_title_form'),
+    'access arguments' => array('administer site configuration'),
+    'type'             => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+
+/**
+ * Main callback form for manual sync data from Google Docs.
+ */
+function spreadsheet_settings_form($form, &$form_state) {
+  // Include helper class file for using google spreadsheet methods.
+  form_load_include($form_state, 'inc', 'ayb_import_spreadsheet', 'ayb_import_spreadsheet_class');
+
+  // Generate new google spreadsheet session using existing google credentials from drupal.
+  $user_name     = variable_get('g_username', NULL);
+  $user_password = variable_get('g_password', NULL);
+  $use_worksheet = variable_get('use_worksheet', NULL);
+  $use_worktab   = variable_get('use_worktab', NULL);
+
+  if (isset($user_name) && isset($user_password)) {
+    $gDoc = new gSpreadSheet($user_name, $user_password);
+  }
+
+  // Process in case there are google credentials and they are valid ones.
+  $tabs       = array('-- No tabs --');
+  $worksheets = array('-- No worksheets --');
+  if (isset($gDoc)) {
+    // Load all Worksheets.
+    $worksheets = $gDoc->ShowWorkSheets();
+    // Load all spreadsheet's tabs list.
+    if (isset($use_worksheet)) {
+      $tabs = $gDoc->getWorkshets($use_worksheet);
+    }
+  }
+/*drupal_set_message('<pre>ShowWorkSheets'.print_r($worksheets).'</pre>');
+drupal_set_message('<pre>getWorkshets'.print_r($tabs).'</pre>');*/
+  // Formate user data fieldset container.
+  $form['user_data'] = array(
+    '#title'       => t('User data credentials for google account.'),
+    '#type'        => 'fieldset',
+    '#collapsible' => FALSE,
+  );
+  // Formate google account user email/username field.
+  $form['user_data']['g_username'] = array(
+    '#type'          => 'textfield',
+    '#title'         => t('Username, Email'),
+    '#default_value' => $user_name,
+  );
+  // Formate google account password field.
+  $form['user_data']['g_password'] = array(
+    '#type'          => 'password',
+    '#title'         => t('Password'),
+    '#default_value' => $user_password,
+  );
+
+  // Formate settings container to warktub.
+  $form['settings'] = array(
+    '#title'       => t('Google spreadsheet settings.'),
+    '#type'        => 'fieldset',
+    '#collapsible' => FALSE,
+  );
+  $form['settings']['current_year'] = array(
+    '#title'       => t('Settings Current year.'),
+    '#type'        => 'fieldset',
+    '#collapsible' => FALSE,
+  );
+  $form['settings']['next_year'] = array(
+    '#title'       => t('Settings Next year.'),
+    '#type'        => 'fieldset',
+    '#collapsible' => FALSE,
+  );
+  // Formate settings use spreadsheet document.
+  $form['settings']['use_worksheet'] = array(
+    '#type'          => 'select',
+    '#options'       => $worksheets,
+    '#title'         => t('Use worksheet (worksheet title)'),
+    '#default_value' => $use_worksheet,
+  );
+  // Formate settings use worksheet tabs Price Current year.
+  $form['settings']['current_year']['use_worktab_current_price'] = array(
+    '#type'          => 'select',
+    '#options'       => $tabs,
+    '#title'         => t('Use worktab Price Current Year'),
+    '#default_value' => $use_worktab['use_worktab_current_price'],
+  );
+  // Formate settings use worksheet tabs Optional service Current year.
+  $form['settings']['current_year']['use_worktab_current_opt'] = array(
+    '#type'          => 'select',
+    '#options'       => $tabs,
+    '#title'         => t('Use worktab Optional Service Current Year'),
+    '#default_value' => $use_worktab['use_worktab_current_opt'],
+  );
+  // Formate settings use worksheet tabs Price Next year.
+  $form['settings']['next_year']['use_worktab_next_year_price'] = array(
+    '#type'          => 'select',
+    '#options'       => $tabs,
+    '#title'         => t('Use worktab Price Next Year'),
+    '#default_value' => $use_worktab['use_worktab_next_year_price'],
+  );
+  // Formate settings use worksheet tabs Optional service Next year.
+  $form['settings']['next_year']['use_worktab_next_year_opt'] = array(
+    '#type'          => 'select',
+    '#options'       => $tabs,
+    '#title'         => t('Use worktab Price Next Year'),
+    '#default_value' => $use_worktab['use_worktab_next_year_opt'],
+  );
+
+  // Formate settings container.
+  $form['cron_settings'] = array(
+    '#title'       => t('Google spreadsheet Cron settings.'),
+    '#type'        => 'fieldset',
+    '#collapsible' => FALSE,
+  );
+  // Formate settings use spreadsheet document.
+  $form['cron_settings']['use_cron'] = array(
+    '#type'          => 'checkbox',
+    '#title'         => t('Disable Cron import data'),
+    '#default_value' => elysia_cron_is_job_disabled('spreadsheet__import_data'),
+  );
+
+  // Submit button.
+  $form['submit'] = array(
+    '#type'  => 'submit',
+    '#value' => t('Submit')
+  );
+
+  return $form;
+}
+
+
+/**
+ * Submit handler for manual sync data from Google Docs function.
+ */
+function spreadsheet_settings_form_submit($form, &$form_state) {
+  // Update variables data with new configs entered in the form.
+  if ($form_state['values']['g_password']) {
+    variable_set('g_password', $form_state['values']['g_password']);
+  }
+  $value = $form_state['values'];
+
+  $array_worktub_value = array(
+    'use_worktab_current_price'   => $value['use_worktab_current_price'],
+    'use_worktab_current_opt'     => $value['use_worktab_current_opt'],
+    'use_worktab_next_year_price' => $value['use_worktab_next_year_price'],
+    'use_worktab_next_year_opt'   => $value['use_worktab_next_year_opt'],
+  );
+
+  variable_set('g_username', $form_state['values']['g_username']);
+  variable_set('use_worksheet', $form_state['values']['use_worksheet']);
+
+  variable_set('use_worktab', $array_worktub_value);
+
+  // Change setting cron tab to export data from google spreadsheet.
+  if ($form_state['values']['use_cron'] == 1) {
+    elysia_cron_set_job_disabled('spreadsheet__import_data', true);
+  }
+  else {
+    elysia_cron_set_job_disabled('spreadsheet__import_data', false);
+  }
+  drupal_set_message(t('Configuration settings were successfull saved !'));
+}
+
+
+/**
+ * Helper function for getting spreadsheet parsed data from db using worksheet id.
+ */
+function spreadsheet_import_get_spreadsheet_data($worksheet) {
+  // Get current worksheet saved from google spreadsheets configs.
+  if (is_numeric($worksheet)) {
+    $query = db_select('variable');
+    $query->fields('variable', array('name', 'value'));
+    $query->condition('name', 'google_spreadsheet_data:' . $worksheet . '%', 'like');
+    $data = $query->execute()->fetchAll();
+
+    $output = array();
+    if ($data) {
+      // Reform result in better format.
+      foreach ($data as $item) {
+        $output[$item->name] = unserialize(stripslashes($item->value));
+      }
+    }
+    return $output;
+  }
+  else {
+    return array();
+  }
+}
+
+
+/**
+ * Process function for loading spreadsheet data for a speciffic product using product id.
+ */
+function get_spreadsheet_data_by_product_id($product_id, $time, $a = false) {
+  $cid = 'product_data_' . md5($product_id . date('Y', $time));
+  $_cache = cache_get($cid);
+
+  if (!empty($_cache->data)) {
+    return $_cache->data;
+  }
+  // Check for product id if is set.
+  $product_data = array(); // Product data stored.
+  if (isset($product_id) && !empty($product_id)) {
+    // Get worksheet id.
+    $worksheet = variable_get('use_worksheet', NULL);
+    $worktab = variable_get('use_worktab', NULL);
+
+    // Get spreadsheet data from db.
+    $spreadsheet_data = spreadsheet_import_get_spreadsheet_data($worksheet);
+    if (!$time) {
+      $time = REQUEST_TIME;
+    }
+
+    // Vars to check select year.
+    $date_year = date('Y', $time);
+    $current_year = date('Y');
+    $next_year = date('Y') + 1;
+
+
+    if ($date_year == $current_year) {
+      $worktab = $worktab['use_worktab_current_price'];
+    }
+    elseif ($date_year == $next_year) {
+      $worktab = $worktab['use_worktab_next_year_price'];
+    }
+    else {
+      $worktab = $worktab['use_worktab_current_price'];
+    }
+
+    $tmp_product_data = array();        // Temporary product data values.
+    $tmp_product_data_titles = array(); // Temporary product data titles.
+    $product_id_k = NULL;               // First product id key value.
+    $product_title_c = NULL;            // First product titles key value.
+    // Loop spreadsheet fetched data from remote saved into db.
+    if (isset($worksheet) && count($spreadsheet_data)) {
+      foreach ($spreadsheet_data['google_spreadsheet_data:' . $worksheet .':'. $worktab] as $col_k => $col_v) {
+        // Formate all product data titles array processing.
+
+        if (isset($product_title_c)) {
+          if ($col_k[0] == $product_title_c[0] && preg_match('/^[0-9]/i', $col_k[1])) {
+            $product_title_c = NULL;
+          }
+          else {
+            $tmp_product_data_titles[$col_k] = $col_v;
+          }
+        }
+
+        // Formate all product data values array processing.
+        if (isset($product_id_k)) {
+          if ($col_k[0] == $product_id_k[0] && preg_match('/^[0-9]/i', $col_k[1])) {
+            $product_id_k = NULL;
+          }
+          else {
+            $tmp_product_data[$col_k] = $col_v;
+          }
+        }
+
+        // Formate product id key title from returned spreadsheet data.
+        if ($col_k == 'A1') {
+          $product_title_c = $col_k;
+          $tmp_product_data_titles[$col_k] = $col_v;
+        }
+
+        // Formate product id key value from returned spreadsheet data.
+        if ($col_v == $product_id) {
+          $product_id_k = $col_k;
+          $tmp_product_data[$col_k] = $col_v;
+        }
+      }
+
+      // Loop all temporary product data values.
+      foreach ($tmp_product_data as $data_key => $data_value) {
+        $k = preg_replace("/[0-9.]/i", "", $data_key);
+        $product_data_v[$k][$data_key] = $data_value;
+      }
+      // Loop all temporary product data titles.
+      foreach ($tmp_product_data_titles as $data_titles_key => $data_titles_value) {
+        $k = preg_replace("/[0-9.]/i", "", $data_titles_key);
+        $product_data_t[$k][$data_titles_key] = $data_titles_value;
+        // Populate product data array with values and titles.
+        $product_data[$k]['title'] = $product_data_t[$k];
+        $product_data[$k]['value'] = isset($product_data_v[$k]) ? $product_data_v[$k] : array('', '', '');
+      }
+    }
+  }
+  cache_set($cid, $product_data);
+  return $product_data;
+}
+
+
+/**
+ * Function set new room title to data from google spreadsheet.
+ */
+function spreadsheet_room_title_form($form, &$form_state) {
+  $form = array();
+  // Create array with cell low and high season.
+  $data_key_high_season = array('D','E','F','G','H','I','J','K','L');
+  $data_key_low__season = array('O','P','Q','R','S','T','U','V','W');
+  $data_keys            = array_merge($data_key_high_season, $data_key_low__season);
+  // Get data from variable.
+  $worksheet         = variable_get('use_worksheet', NULL);
+  $worktab_array     = variable_get('use_worktab', NULL);
+  $worktab_current   = $worktab['use_worktab_current_price'];
+  $worktab_next      = $worktab['use_worktab_next_year_price'];
+  $data_vars_current = variable_get('google_spreadsheet_data:' . $worksheet . ':' . $worktab_current, NULL);
+  $room_title        = variable_get('g_room_title');
+  $room_count        = variable_get('g_room_count');
+  $room_count_child  = variable_get('g_room_count_child');
+  if (empty($room_title)) {
+    $room_title = array();
+  }
+  // Forming data to render form.
+  $form['high_season'] = array(
+    '#type' => 'fieldset',
+    '#collapsible' => FALSE,
+    '#title' => t('High season'),
+  );
+  $form['low_season'] = array(
+    '#type' => 'fieldset',
+    '#collapsible' => FALSE,
+    '#title' => t('Low season'),
+  );
+  $form['data_vars_current'] = array(
+    '#type' => 'hidden',
+    '#value' => $data_vars_current,
+  );
+  $form['data_keys'] = array(
+    '#type' => 'hidden',
+    '#value' => $data_keys,
+  );
+  foreach ($data_keys as $k => $key) {
+    if (in_array($key, $data_key_high_season)) {
+      $form['high_season']['room' . $key] = array(
+        '#type'        => 'fieldset',
+        '#collapsible' => FALSE,
+      );
+      $form['high_season']['room'. $key]['room_title_'. $key] = array(
+        '#type'          => 'textfield',
+        '#default_value' => $room_title[$key],
+        '#description'   => t('Old room title - @name', array('@name' => $data_vars_current[$key.'3'])),
+      );
+      $form['high_season']['room'. $key]['room_count'. $key] = array(
+        '#type'          => 'textfield',
+        '#default_value' => $room_count[$key],
+        '#description'   => t('Count include service'),
+      );
+      $form['high_season']['room'. $key]['room_count_child'. $key] = array(
+        '#type'          => 'textfield',
+        '#default_value' => $room_count_child[$key],
+        '#description'   => t('Count include childerns'),
+      );
+    }
+    if (in_array($key, $data_key_low__season)) {
+      $form['low_season']['room'. $key] = array(
+        '#type' => 'fieldset',
+        '#collapsible' => FALSE,
+      );
+      $form['low_season']['room'. $key]['room_title_'. $key] = array(
+        '#type' => 'textfield',
+        '#default_value' => $room_title[$key],
+        '#description' => t('Old room title - @name', array('@name' => $data_vars_current[$key.'3'])),
+      );
+      $form['low_season']['room'. $key]['room_count'. $key] = array(
+        '#type' => 'textfield',
+        '#default_value' => $room_count[$key],
+        '#description' => t('Count include service'),
+      );
+      $form['low_season']['room'. $key]['room_count_child'. $key] = array(
+        '#type' => 'textfield',
+        '#default_value' => $room_count_child[$key],
+        '#description' => t('Count include childerns'),
+      );
+    }
+  }
+  // Submit button.
+  $form['submit'] = array(
+    '#type'  => 'submit',
+    '#value' => t('Save'),
+  );
+
+  return $form;
+}
+
+
+/**
+ * Function submit form room title.
+ */
+function spreadsheet_room_title_form_submit($form, &$form_state) {
+  $data = $form_state['values'];
+  $data_keys = $data['data_keys'];
+  $data_vars_current = $data['data_vars_current'];
+  $data_title = $data_count = $data_count_child = array();
+  foreach ($data_keys as $k => $key) {
+    // if (!empty($data['room_title_'.$key])) {
+    //   $data_title[$key] = $data['room_title_'.$key];
+    //   $data_count[$key] = $data['room_count'.$key];
+    //   $data_count_child[$key] = $data['room_count_child'.$key];
+    // }
+    // else {
+    //   $data_title[$key] = $data_vars_current[$key.'3'];
+    //   // If empty textfield - record to variable 1.
+    //   $data_count[$key] = 1;
+    //   $data_count_child[$key] = 0;
+    // }
+    $data_title[$key] = !empty($data['room_title_' . $key]) ? $data['room_title_' . $key] : $data_vars_current[$key . '3'];
+    $data_count[$key] = !empty($data['room_count' . $key]) ? $data['room_count' . $key] : 1;
+    $data_count_child[$key] = !empty($data['room_count_child' . $key]) ? $data['room_count_child' . $key] : 0;
+  }
+  variable_set('g_room_title', $data_title);
+  variable_set('g_room_count', $data_count);
+  variable_set('g_room_count_child', $data_count_child);
+  drupal_set_message(t('Configuration settings were successfull saved !'));
+}
+
+
+/**
+ * Google spreadsheet data import function callback using google account credentials.
+ */
+function spreadsheet_import_form() {
+  $form = array();
+
+  // Get google account credentials from configs.
+  $user_name = variable_get('g_username', NULL);
+  $user_password = variable_get('g_password', NULL);
+  $worksheet = variable_get('use_worksheet', NULL);
+  $worktab = variable_get('use_worktab', NULL);
+
+  // Validation.
+  if (isset($user_name) && isset($user_password) && isset($worksheet) && isset($worktab)) {
+    $form['import'] = array(
+      '#type' => 'submit',
+      '#value' => t('Import data'),
+    );
+    // Send all data for processing after passing validation and clicking import button.
+    $form['settings'] = array(
+      '#type' => 'hidden',
+      '#value' => array(
+        'g_username' => $user_name,
+        'g_password' => $user_password,
+        'use_worksheet' => $worksheet,
+        'use_worktab' => $worktab,
+      ),
+    );
+  }
+  else {
+    $form['help_text'] = array(
+      '#markup' => t('First of all need to setup google account data !'),
+    );
+  }
+
+  // Dispaly imported data wrapper.
+  $form['data_next_opt'] = $form['data_next'] = $form['data_current_opt'] = $form['data_current'] = array(
+    '#type' => 'fieldset',
+    '#collapsible' => FALSE
+  );
+  $form['data_current']['#title'] = t('Data imported to Current year');
+  $form['data_next']['#title'] = t('Data inportet to Next year');
+  $form['data_current_opt']['#title'] = t('Data imported to Current year OPTIONAL SERVICE');
+  $form['data_next_opt']['#title'] = t('Data inported to Next year OPTIONAL SERVICE');
+
+  $form['data_current']['data_imported_current_price'] = array(
+    '#markup' => json_encode(
+      variable_get(
+        'google_spreadsheet_data:' .
+        $worksheet . ':' .
+        $worktab['use_worktab_current_price'],
+      NULL)
+    ),
+  );
+  $form['data_next']['data_imported_next_price'] = array(
+    '#markup' => json_encode(
+      variable_get(
+        'google_spreadsheet_data:' .
+        $worksheet . ':' .
+        $worktab['use_worktab_next_year_price'],
+      NULL)
+    ),
+  );
+  $form['data_current_opt']['data_imported_current_opt'] = array(
+    '#markup' => json_encode(
+      variable_get(
+        'google_spreadsheet_data:' .
+        $worksheet . ':' .
+        $worktab['use_worktab_current_opt'],
+      NULL)
+    ),
+  );
+  $form['data_next_opt']['data_imported_next_opt'] = array(
+    '#markup' => json_encode(
+      variable_get(
+        'google_spreadsheet_data:' .
+        $worksheet . ':' .
+        $worktab['use_worktab_next_year_opt'],
+      NULL)
+    ),
+  );
+
+  return $form;
+}
+
+
+/**
+ * Custom submit handler for import google spreadsheet data.
+ */
+function spreadsheet_import_form_submit($form, &$form_state) {
+  // Check if isset settings data array;
+  if (isset($form_state['values']['settings'])) {
+    // Get google account credentials from configs.
+    $array_data['worktab_array'] = array();
+    $array_data['u_name']    = $form_state['values']['settings']['g_username'];
+    $array_data['u_pass']    = $form_state['values']['settings']['g_password'];
+    $array_data['worksheet'] = $form_state['values']['settings']['use_worksheet'];
+    $array_data['worktab']   = $form_state['values']['settings']['use_worktab'];
+
+    // Call function to record import data to variable.
+    spreadsheet_import_record($array_data);
+    drupal_set_message(t('Configuration settings were successfull saved !'));
+    // Need clear cache (delete old data from database) for using new data.
+    drupal_flush_all_caches();
+  }
+}
+
+
+/**
+ * Implements hook_cronapi().
+ */
+function ayb_import_spreadsheet_cronapi($op, $job = NULL) {
+  $items = array();
+  $items['spreadsheet__import_data'] = array(
+    'description' => 'Queue',
+    'rule' => '0 * * * *',
+    'callback' => 'spreadsheet_import_data_cron',
+  );
+
+  return $items;
+}
+
+/**
+ * Implements callback function to hook_cron().
+ */
+function spreadsheet_import_data_cron() {
+  $array_data['u_name'] = variable_get('g_username', NULL);
+  $array_data['u_pass'] = variable_get('g_password', NULL);
+  $array_data['worksheet'] = variable_get('use_worksheet', NULL);
+  $array_data['worktab'] = variable_get('use_worktab', NULL);
+
+  if (!$user_name || !$user_password) {
+    return drupal_set_message(t('Not set user name or user password'), 'error');
+  } else {
+    // Call function to record import data to variable.
+    spreadsheet_import_record($array_data);
+    drupal_set_message(t('Configuration settings were successfull saved !'));
+  }
+}
+
+
+/**
+ * Function record imported data from google spreadsheet to variables.
+ * @param array $array_data.
+ *   array with data configure to import.
+ */
+function spreadsheet_import_record($array_data) {
+  $user_name = $array_data['u_name'];
+  $user_password = $array_data['u_pass'];
+  $worksheet = $array_data['worksheet'];
+  $worktab = $array_data['worktab'];
+  // Include helper class file for using google spreadsheet methods.
+  require_once('ayb_import_spreadsheet_class.inc');
+  // Use foreach to record all variable.
+  foreach ($worktab as $k => $v) {
+    // Generate new google spreadsheet session using existing google credentials from drupal.
+    $gDoc = new gSpreadSheet($user_name, $user_password);
+    // Set spreadsheet's worksheet tab using saved settings.
+    $gDoc->getSpreadFeed($worksheet);
+    $gDoc->setWorkSheet($v);
+    $data = $gDoc->getAllCell();
+    // Save imported data from google spreadsheet into variable in db.
+    variable_set('google_spreadsheet_data:' . $worksheet . ':' . $v, $data);
+  }
+}
+
+/**
+ * Returns list of optional services, keyed by code.
+ */
+function spreadsheet_get_services($code = NULL) {
+  $options_data = &drupal_static(__FUNCTION__);
+
+  if (!empty($options_data) && is_array($options_data)) {
+    if (isset($code) && $code !== FALSE) {
+      $code = strtolower($code);
+      return isset($options_data[$code]) ? $options_data[$code] : NULL;
+    }
+    return $options_data;
+  }
+  $options_data = array();
+
+  $worktab   = variable_get('use_worktab', NULL);
+  $worksheet = variable_get('use_worksheet', NULL);
+
+  $all_opts = variable_get('google_spreadsheet_data:' . $worksheet . ':' . $worktab['use_worktab_current_opt'], array());
+
+  foreach ($all_opts as $key => $value) {
+    if (substr($key, 0, 1) == 'A') {
+      $number = substr($key, 1);
+      if ($number < 3) {
+        continue;
+      }
+      $options_data[strtolower($value)] = array(
+        'name' => $all_opts['B' . $number],
+        'code' => $all_opts['A' . $number],
+        'prices' => array(
+          1 => $all_opts['C' . $number],
+          2 => $all_opts['D' . $number],
+          3 => $all_opts['E' . $number],
+          4 => $all_opts['F' . $number],
+          5 => $all_opts['G' . $number],
+          6 => $all_opts['H' . $number],
+          7 => $all_opts['I' . $number],
+          8 => $all_opts['J' . $number],
+          9 => $all_opts['K' . $number],
+        ),
+      );
+    }
+  }
+  if (isset($code) && $code !== FALSE) {
+    $code = strtolower($code);
+    return isset($options_data[$code]) ? $options_data[$code] : NULL;
+  }
+  return $options_data;
+}

@@ -1,0 +1,6 @@
+name = Spreadsheet import
+description = Module which imports google spreadsheet data formateed as array.
+package = AYB Custom modules
+
+core = 7.x
+files[] = ayb_import_spreadsheet.module

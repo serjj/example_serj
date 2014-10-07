@@ -1,0 +1,16 @@
+; $Id:$
+name = Internetdevels Google Merchant
+description = custom module, Ukrainian Drupal Company
+package = InternetDevels
+core = 7.x
+version = 7.x-1.x
+
+dependencies[] = commerce
+dependencies[] = commerce_ui
+dependencies[] = commerce_product
+dependencies[] = commerce_product_ui
+
+files[] = idevels_gmerchant.module
+
+; Plugins
+files[] = plugins/idevels_gmerchant_plugin_style_export_xml.inc

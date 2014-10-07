@@ -1,0 +1,147 @@
+<?php
+
+/**
+ * @file
+ * Install, and uninstall functions for the commerece google merchant integration module.
+ */
+
+/**
+ * Implements hook_requirements().
+ */
+function idevels_gmerchant_requirements($phase) {
+
+  $requirements = array();
+  $t = get_t();
+
+  if (!function_exists('simplexml_load_string')) {
+    $requirements['simplexml'] = array(
+        'title' => $t('SimpleXML'),
+        'value' => $t('Not found'),
+        'severity' => REQUIREMENT_ERROR,
+        'description' => $t('The SimpleXML extension for PHP required by the Ubercart Google Base Integration module is not enabled. See <a href="!url">this page</a> for more information.', array('!url' => url('http://us.php.net/manual/en/intro.simplexml.php'))),
+    );
+  }
+  if (!function_exists('openssl_open')) {
+    $requirements['simplexml'] = array(
+        'title' => $t('OpenSSL'),
+        'value' => $t('Not found'),
+        'severity' => REQUIREMENT_ERROR,
+        'description' => $t('The OpenSSL extension for PHP required by the Ubercart Google Base Integration module is not enabled. See <a href="!url">this page</a> for more information.', array('!url' => url('http://us2.php.net/manual/en/book.openssl.php'))),
+    );
+  }
+
+
+  return $requirements;
+}
+
+/**
+ * Implements hook_schema().
+ */
+function idevels_gmerchant_schema() {
+  $schema = array();
+  $schema['idevels_gmerchant'] = array(
+      'description' => t('Stores the data for products submitted to Google Merchant.'),
+      'fields' => array(
+          'entity_id' => array(
+              'type' => 'int',
+              'unsigned' => TRUE,
+              'not null' => TRUE,
+              'description' => t('Drupal entity ID.'),
+          ),
+          'gid' => array(
+              'type' => 'varchar',
+              'length' => '25',
+              'not null' => TRUE,
+              'description' => t('The id assigned by Google Base.'),
+          ),
+          'product_name' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('Product Name'),
+          ),
+          'product_type' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('Under which product type in Google base'),
+          ),
+          'product_description' => array(
+              'type' => 'varchar',
+              'length' => '1024',
+              'not null' => TRUE,
+              'description' => t('Description of the product on google base'),
+          ),
+          'product_condition' => array(
+              'type' => 'int',
+              'unsigned' => TRUE,
+              'not null' => TRUE,
+              'description' => t('The condition of the product'),
+          ),
+          'product_brand' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('product brand'),
+          ),
+          'product_model_no' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('product model no'),
+          ),
+          'product_price' => array(
+              'type' => 'float',
+              'not null' => TRUE,
+              'description' => t('product price'),
+          ),
+          'payment_method' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('What payment methods is this product available in'),
+          ),
+          'images' => array(
+              'type' => 'varchar',
+              'length' => '1024',
+              'description' => t('Product images which are chosen'),
+          ),
+          'age_group' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('Target age group of the item'),
+          ),
+          'gender' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('Gender of the item'),
+          ),
+          'color' => array(
+              'type' => 'varchar',
+              'length' => '255',
+              'not null' => TRUE,
+              'description' => t('Color of the item'),
+          ),
+      ),
+      'primary key' => array('entity_id'),
+  );
+  return $schema;
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function idevels_gmerchant_uninstall() {
+
+}
+
+/**
+ * Implements hook_update_N().
+ */
+function idevels_gmerchant_update_7100(&$sandbox) {
+  if (db_field_exists('idevels_gmerchant', 'submit_type')) {
+    db_drop_field('idevels_gmerchant', 'submit_type');
+  }
+}

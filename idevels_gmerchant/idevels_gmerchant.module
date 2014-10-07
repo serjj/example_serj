@@ -1,0 +1,781 @@
+<?php
+/**
+ * @file
+ * Main module of idevels Google Merchant.
+ */
+
+/**
+ * Implements hook_menu().
+ */
+function idevels_gmerchant_menu() {
+  $items = array();
+  $items['idevels_gmerchant/autocomplete'] = array(
+    'title'            => 'Autocomplete for uc_gbase_categories',
+    'page callback'    => 'idevels_gmerchant_categories_autocomplete',
+    'access callback'  => TRUE,
+    'access arguments' => array('access content'),
+    'type'             => MENU_CALLBACK,
+  );
+  $items['admin/commerce/settings/idevels_gmerchant'] = array(
+    'title'            => 'Google Merchant Integration',
+    'description'      => 'Settings for Google Merchant Integration.',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('idevels_gmerchant_store_admin_settings_form'),
+    'access arguments' => array('administer google merchant integration'),
+    'file'             => 'idevels_gmerchant.admin.inc',
+    'type'             => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function idevels_gmerchant_permission() {
+  return array(
+    'administer google merchant integration' => array(
+      'title' => t('Administer Google Merchant Integration'),
+    ),
+    'management google merchant integration' => array(
+      'title' => t('Management Google Merchant Integration'),
+    ),
+  );
+}
+
+/**
+ * Function for authenticate with Google Merchant.
+ */
+function idevels_gmerchant_authenticate() {
+  $url      = 'https://www.google.com/accounts/ClientLogin';
+  $email    = urlencode(variable_get('idevels_gmerchant_account_email', ''));
+  $password = urlencode(variable_get('idevels_gmerchant_account_password', ''));
+  $app_name = urlencode(variable_get('idevels_gmerchant_app_name', ''));
+  $headers  = array(
+    'Content-Type' => 'application/x-www-form-urlencoded',
+  );
+
+  $options = array(
+    'method'  => 'POST',
+    'data'    => "Email=$email&Passwd=$password&service=structuredcontent&source=$app_name",
+    'headers' => $headers,
+  );
+  $result = drupal_http_request($url, $options);
+  $result = stristr($result->data, 'Auth=');
+
+  return $result;
+}
+
+/**
+ * Autocomplete to search google product category.
+ */
+function idevels_gmerchant_categories_autocomplete($string) {
+  $matches = array();
+  if (drupal_strlen($string) >= 3) {
+    $i = 0;
+    $categories = variable_get('idevels_gmerchant_categories', array());
+    foreach ($categories as $value) {
+      if (stripos($value, $string) === FALSE) {
+
+      }
+      else {
+        $matches[$value] = $value;
+        if ($i >= 25) {
+          break;
+        }
+        $i++;
+      }
+    }
+  }
+
+  drupal_json_output($matches);
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function idevels_gmerchant_form_alter(&$form, $form_state, $form_id) {
+  if (!user_access('management google merchant integration')) {
+    return;
+  }
+  switch ($form_id) {
+    case 'internetdevels_commerce_product_add_form':
+      $form['actions']['submit']['#submit'][] = 'idevels_gmerchant_form_submit';
+  
+      $categories = variable_get('idevels_gmerchant_categories', array());
+  
+      if (empty($categories)) {
+  
+        $matches = array();
+  
+        $categories = file_get_contents("http://www.google.com/basepages/producttype/taxonomy.en-US.txt");
+  
+        foreach (preg_split("/(\r?\n)/", $categories) as $line) {
+          if (substr($line, 0, 1) == '#')
+            continue;
+          $matches[] = $line;
+        }
+  
+        variable_set('idevels_gmerchant_categories', $matches);
+      }
+  
+      $node = $form_state['node'];
+      $field_image = field_get_items('node', $node, 'field_image');
+      $images = array_fill(0, 4, '');
+      $i = 0;
+      if (!empty($field_image)) {
+        foreach ($field_image as $image) {
+          if ($wrapper = file_stream_wrapper_get_instance_by_uri($image['uri'])) {
+            $images[$i] = $wrapper->getExternalUrl();
+          }
+          $i++;
+        }
+      }
+  
+      $form['idevels_gmerchant_submit'] = array();
+      $form['idevels_gmerchant_submit']['idevels_gmerchant'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Google Merchant Details'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+        '#tree' => TRUE,
+      );
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_product_type'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Product Type'),
+        '#description' => t('The category which this Product should be listed under on Google Product Search,
+            You Can refer to categories on <a href="http://www.google.com/support/merchants/bin/answer.py?hl=en&answer=160081">Google Merchant Help</a>,
+            Or you can find the sheet on <a href="http://www.google.com/basepages/producttype/taxonomy.en-US.txt">Product Taxonomy</a>,
+            An example of what you should enter in this field is:<br /> Arts & Entertainment > Crafts & Hobbies > Drawing & Painting > Painting'),
+        '#size' => 92,
+        '#maxlength' => 255,
+        '#autocomplete_path' => 'idevels_gmerchant/autocomplete',
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_type']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_type'] : '',
+        '#attributes' => array('class' => array('gmerchant')),
+      );
+      $body = field_get_items('node', $node, 'body');
+      $body = strip_tags($body[0]['value']);
+      $alter = array('max_length' => 1021, 'word_boundary' => TRUE, 'ellipsis' => TRUE);
+      $body = views_trim_text($alter, $body);
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_product_description'] = array(
+        '#type' => 'textarea',
+        '#title' => t('Product Description'),
+        '#description' => t('The description of the product to be published on Google Base, <b>Must be all text, NO HTML</b>. If you have a wysiwyg editor on your site please click the <b>Switch to plain text editor link</b>.'),
+        '#wysiwyg' => FALSE,
+        '#maxlength' => 1024,
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_description']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_description'] : $body,
+      );
+      
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_product_model_no'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Product Model No (SKU)'),
+        '#description' => t('The Model No (SKU) of the product'),
+        '#size' => 17,
+        '#maxlength' => 255,
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_model_no']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_model_no'] : idevels_merchant_generate_gtin(),
+        '#required' => TRUE,
+      );
+      
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_color'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Product color'),
+        '#description' => t('The color of the product'),
+        '#size' => 17,
+        '#maxlength' => 255,
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_color']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_color'] : 'Black',
+        '#required' => TRUE,
+      );
+      
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_age_group'] = array(
+        '#type' => 'radios',
+        '#title' => t('Target age group of the item'),
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_age_group']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_age_group'] : 'adult',
+        '#options' => array('adult' => t('Adult'), 'kids' => t('Kids')),
+      );
+      
+      $form['idevels_gmerchant_submit']['idevels_gmerchant']['idevels_gmerchant_gender'] = array(
+        '#type' => 'radios',
+        '#title' => t('Gender of the item'),
+        '#default_value' => !empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_gender']) ? $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_gender'] : 'unisex',
+        '#options' => array('unisex' => t('Unisex'), 'male' => t('Male'), 'female' => t('Female')),
+      );
+      break;
+  }
+}
+
+function idevels_gmerchant_form_submit($form, &$form_state) {
+  $types = array_keys(variable_get('idevels_gmerchant_node_types', array()));
+  $node = $form_state['node'];
+  $values = $form_state['values']['idevels_gmerchant'];
+  $node->idevels_gmerchant_submit = array(
+    'idevels_gmerchant' => array(
+      'idevels_gmerchant_product_type' => $values['idevels_gmerchant_product_type'],
+      'idevels_gmerchant_product_description' => $values['idevels_gmerchant_product_description'],
+      'idevels_gmerchant_product_model_no' => $values['idevels_gmerchant_product_model_no'],
+      'idevels_gmerchant_color' => $values['idevels_gmerchant_color'],
+      'idevels_gmerchant_age_group' => $values['idevels_gmerchant_age_group'],
+      'idevels_gmerchant_gender' => $values['idevels_gmerchant_gender'],
+    )
+  );
+  $node->idevels_gmerchant_id = idevels_gmerchant_load($node->nid);
+  $node->idevels_gmerchant_id = idevels_gmerchant_insert_item($node);
+}
+
+/**
+ * Implements hook_node_load().
+ */
+function idevels_gmerchant_node_load($nodes, $types) {
+
+  foreach ($nodes as $nid => $node) {
+
+    $types = array_keys(variable_get('idevels_gmerchant_node_types', array()));
+
+    if (in_array($node->type, $types)) {
+      $nodes[$node->nid]->idevels_gmerchant_id = idevels_gmerchant_load($node->nid);
+      $result = db_query('SELECT product_name, product_type, product_description, product_condition, product_brand, product_model_no, product_price, payment_method, images, color, age_group, gender FROM {idevels_gmerchant} WHERE entity_id = :entity_id', array(':entity_id' => $node->nid))->fetchAssoc();
+
+      $images = explode('$', $result['images']);
+
+      $nodes[$node->nid]->idevels_gmerchant_submit = array(
+          'idevels_gmerchant' => array(
+              'idevels_gmerchant_product_type'        => $result['product_type'],
+              'idevels_gmerchant_product_description' => $result['product_description'],
+              'idevels_gmerchant_product_model_no'    => $result['product_model_no'],
+              'idevels_gmerchant_color'               => $result['color'],
+              'idevels_gmerchant_age_group'           => $result['age_group'],
+              'idevels_gmerchant_gender'              => $result['gender'],
+          )
+      );
+    }
+  }
+}
+
+/**
+ * Implements hook_node_delete().
+ */
+function idevels_gmerchant_node_delete($node) {
+  $node->idevels_gmerchant_id = idevels_gmerchant_load($node->nid);
+  if (!empty($node->idevels_gmerchant_id)) {
+    $deleted = idevels_gmerchant_delete_item($node);
+    if (empty($deleted)) {
+      drupal_set_message(t('@title was not successfully deleted from Google Base.', array('@title' => $node->title)));
+    }
+    else {
+      idevels_gmerchant_delete($node->nid);
+    }
+  }
+}
+
+/**
+ * Implements hook_load().
+ */
+function idevels_gmerchant_load($nid) {
+  if (is_numeric($nid)) {
+    $gid = db_query("SELECT gid FROM {idevels_gmerchant} WHERE entity_id = :entity_id", array(':entity_id' => $nid))->fetchField();
+    return $gid;
+  }
+}
+
+/**
+ * Implements hook_delete().
+ */
+function idevels_gmerchant_delete($nid) {
+  if (is_numeric($nid)) {
+    $result = db_query("DELETE FROM {idevels_gmerchant} WHERE entity_id = :entity_id", array(':entity_id' => $nid));
+    return ($result->rowCount() > 0);
+  }
+}
+
+function idevels_gmerchant_delete_item($node) {
+  global $language;
+  $account_id = variable_get('idevels_gmerchant_account_id', '');
+  $store = variable_get('idevels_gmerchant_country', '');
+  $item_url = "https://content.googleapis.com/content/v1/$account_id/items/products/schema/online:$language->language:$store:$node->idevels_gmerchant_id";
+  $auth = idevels_gmerchant_authenticate();
+  $headers = array(
+      'Content-Type' => 'application/atom+xml',
+      'Authorization' => 'GoogleLogin ' . trim($auth),
+  );
+  $options = array(
+      'method' => 'DELETE',
+      'data' => NULL,
+      'headers' => $headers,
+  );
+  $result = drupal_http_request($item_url, $options);
+  return ($result->code == 200);
+}
+
+function idevels_gmerchant_insert_item($node) {
+
+  $idevels_gmerchant = !empty($node->idevels_gmerchant_submit) ? $node->idevels_gmerchant_submit : array();
+
+  $idevels_gmerchant['idevels_gmerchant'] = array();
+
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_type'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_type'];
+  if (empty($node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_description'])) {
+    $body = field_get_items('node', $node, 'field_body');
+    $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_description'] = strip_tags($body[0]['value']);
+  }
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_description'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_description'];
+
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_model_no'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_product_model_no'];
+
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_color'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_color'];
+
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_age_group'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_age_group'];
+
+  $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_gender'] = $node->idevels_gmerchant_submit['idevels_gmerchant']['idevels_gmerchant_gender'];
+
+  $record['entity_id'] = $node->nid;
+  $record['product_type'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_type'];
+  $record['product_description'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_description'];
+  $record['product_model_no'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_product_model_no'];
+  $record['color'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_color'];
+  $record['age_group'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_age_group'];
+  $record['gender'] = $idevels_gmerchant['idevels_gmerchant']['idevels_gmerchant_gender'];
+
+  $nid = db_query("SELECT entity_id FROM {idevels_gmerchant} WHERE entity_id = :entity_id", array(':entity_id' => $record['entity_id']))->fetchField();
+  if (!empty($record['product_type'])) {
+    if (empty($node->idevels_gmerchant_id) && empty($nid)) {
+      $result = db_query("INSERT INTO {idevels_gmerchant} (entity_id, gid, product_name, product_type, product_description, product_condition, product_brand, product_model_no, product_price, payment_method, images, color, age_group, gender)
+                         VALUES (:entity_id, :gid, :product_name, :product_type, :product_description, :product_condition, :product_brand, :product_model_no, :product_price, :payment_method, :images, :color, :age_group, :gender)", array(
+          ':entity_id' => $record['entity_id'], ':gid' => $record['gid'], ':product_name' => $record['product_name'], ':product_type' => $record['product_type'],
+          ':product_description' => $record['product_description'], ':product_condition' => $record['product_condition'], ':product_brand' => $record['product_brand'], ':product_model_no' => $record['product_model_no'], ':product_price' => $record['product_price'],
+          ':payment_method' => $record['payment_method'], ':images' => $record['images'], ':color' => $record['color'], ':age_group' => $record['age_group'], ':gender' => $record['gender']));
+    }
+    else {
+      $result = db_query("UPDATE {idevels_gmerchant}
+                SET gid = :gid, product_name = :product_name, product_type = :product_type, product_description = :product_description,
+                product_condition = :product_condition, product_brand = :product_brand, product_model_no = :product_model_no, product_price = :product_price, payment_method = :payment_method, images = :images,
+                color = :color, age_group = :age_group, gender = :gender
+                WHERE entity_id = :entity_id", array(':gid' => $record['gid'], ':product_name' => $record['product_name'], ':product_type' => $record['product_type'],
+          ':product_description' => $record['product_description'], ':product_condition' => $record['product_condition'], ':product_brand' => $record['product_brand'],
+          ':product_model_no' => $record['product_model_no'], ':product_price' => $record['product_price'], ':payment_method' => $record['payment_method'], ':images' => $record['images'],
+          ':color' => $record['color'], ':age_group' => $record['age_group'], ':gender' => $record['gender'], ':entity_id' => $record['entity_id'])
+      );
+    }
+  }
+  else {
+    db_delete('idevels_gmerchant')
+      ->condition('entity_id', $record['entity_id'])
+      ->execute();
+  }
+
+  return $record['gid'];
+}
+
+/**
+ * Implements hook_feeds_processor_targets_alter().
+ */
+function idevels_gmerchant_feeds_processor_targets_alter(&$targets, $content_type) {
+
+  $types = array_keys(variable_get('idevels_gmerchant_node_types', array()));
+
+  //if ($content_type == 'node') {
+    $targets['idevels_gmerchant_submit'] = array(
+        'name' => t('Submit Product to Google Merchant (Yes = 1, No = 0)'),
+        'description' => t('Product Name on Google Merchant (Yes = 1, No = 0)'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_product_description'] = array(
+        'name' => t('Product Description on Google Merchant'),
+        'description' => t('Product Description on Google Merchant'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_product_model_no'] = array(
+        'name' => t('Product Model No (SKU) on Google Merchant'),
+        'description' => t('Product Model No (SKU) on Google Merchant'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_product_type'] = array(
+        'name' => t('Product Type on Google Merchant (Refer to categories on http://www.google.com/basepages/producttype/taxonomy.en-US.txt'),
+        'description' => t('Product Type on Google Merchant (Refer to categories on http://www.google.com/basepages/producttype/taxonomy.en-US.txt)'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_color'] = array(
+        'name' => t('Color of the item'),
+        'description' => t('Color of the item'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_age_group'] = array(
+        'name' => t('Target age group of the item'),
+        'description' => t('Target age group of the item'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+    $targets['idevels_gmerchant_gender'] = array(
+        'name' => t('Gender of the item'),
+        'description' => t('Gender of the item'),
+        'callback' => 'idevels_gmerchant_set_target',
+    );
+  //}
+}
+
+function idevels_gmerchant_set_target($context, $node, $target, $value) {
+  if (!property_exists($node, 'idevels_gmerchant_submit')) {
+    $node->idevels_gmerchant_submit = array();
+    $node->idevels_gmerchant_submit['idevels_gmerchant'] = array();
+  }
+
+    $node->idevels_gmerchant_submit['idevels_gmerchant'][$target] = strip_tags($value);
+}
+
+function idevels_gmerchant_submit_node_form_submit($form, &$form_state) {
+  $operations = array('operations' => array(), 'title' => t('Processing Products'));
+  foreach ($form_state['values']['products'] as $product_id) {
+    $operations['operations'][] = array('idevels_gmerchant_submit_node', array($product_id, $form_state['values']['delete']));
+  }
+  batch_set($operations);
+}
+
+function idevels_gmerchant_submit_node($nid, $delete) {
+  $product = node_load($nid);
+  global $base_url;
+  global $language;
+  if ($delete) {
+    $account_id = variable_get('idevels_gmerchant_account_id', '');
+    $store = variable_get('idevels_gmerchant_country', '');
+    $item_url = "https://content.googleapis.com/content/v1/$account_id/items/products/schema/online:$language->language:$store:$node->idevels_gmerchant_id";
+    $auth = idevels_gmerchant_authenticate();
+    $headers = array(
+        'Content-Type' => 'application/atom+xml',
+        'Authorization' => 'GoogleLogin ' . trim($auth),
+    );
+
+    $options = array(
+        'method' => 'DELETE',
+        'data' => NULL,
+        'headers' => $headers,
+    );
+    $result = drupal_http_request($item_url, $options);
+  }
+  else {
+    //$node = node_submit($product);
+    node_save($product);
+  }
+}
+
+/**
+ * Generate gtin from timestamp.
+ */
+function idevels_merchant_generate_gtin() {
+  $gtin  = '979';
+  $time  = time();
+  $len   = strlen($time);
+  $gtin .= substr($time, $len - 9, 9);
+  $len   = strlen($gtin);
+  $n     = 0;
+  for ($i = 1; $i <= $len; $i++) {
+    $curr = $gtin[$len - $i];
+    $n += ($i%2 === 0) ? $curr : $curr * 3;
+  }
+  $gtin .= ceil($n/10) * 10 - $n;
+  return $gtin;
+}
+
+/**
+ * Implements hook_cron().
+ */
+function idevels_gmerchant_cron() {
+  $result = db_select('idevels_gmerchant', 'igm')
+    ->fields('igm', array('entity_id'))
+    ->execute()
+    ->fetchCol();
+  if (!empty($result)) {
+    $queue = DrupalQueue::get('idevels_gmerchant_resave_items');
+    $queue->createQueue();
+    foreach($result as $item) {
+      $queue->createItem($item);
+    }
+  }
+}
+
+/**
+ * Implements hook_cron_queue_info().
+ */
+function idevels_gmerchant_cron_queue_info() {
+  $queues = array();
+  $queues['idevels_gmerchant_resave_items'] = array(
+    'worker callback' => 'idevels_gmerchant_worker_callback',
+    'time' => 60,
+  );
+  return $queues;
+}
+
+/**
+ * Worker callback for cron queue.
+ */
+function idevels_gmerchant_worker_callback($item) {
+  idevels_gmerchant_submit_node($item, 0);
+}
+
+
+
+
+
+
+
+
+///**
+// * Implements hook_menu().
+// */
+//function idevels_gmerchant_menu() {
+//  $items = array();
+//  $items['gmerch_bu'] = array(
+//    'title'            => 'Artisan autocomplete',
+//    'page callback'    => 'idevels_gmerchant_bu',
+//    'access callback' => TRUE,
+//    'type'             => MENU_CALLBACK,
+//  );
+//
+//  return $items;
+//}
+//
+///**
+// * Implements of hook_cron_queue_info().
+// */
+//function idevels_gmerchant_cron_queue_info() {
+//  $queues['gmerchant_xml'] = array(
+//    'worker callback' => 'idevels_gmerchant_queue_callback',
+//    'time' => 60,
+//  );
+//
+//  return $queues;
+//}
+//
+///**
+// * Implements hook_cronapi().
+// */
+//function idevels_gmerchant_cronapi($op, $job = NULL) {
+//  $items = array();
+//  $items['idevels_gmerchant_create_queue'] = array(
+//    'description' => 'Queue',
+//    'rule' => '4 0 * * *',
+//    'callback' => 'idevels_gmerchant_create_queue',
+//  );
+//  return $items;
+//}
+//
+///**
+// * Implements hook_cron().
+// */
+//function idevels_gmerchant_create_queue() {
+//  // Load queue.
+//  $queue = DrupalQueue::get('gmerchant_xml');
+//}
+//
+///**
+// * Save xml file with all items.
+// */
+//function idevels_gmerchant_queue_callback() {
+//  $bu = views_embed_view('commerce_item_export', 'views_data_export_1');
+//  file_unmanaged_save_data($bu , 'sites/default/files/import/output.xls', FILE_EXISTS_REPLACE);
+//}
+//
+//
+//function idevels_gmerchant_bu() {
+//  $view = views_get_view('export_product');
+//  $display = $view->preview('views_data_export_1');
+//  
+//    ob_start();
+//    $view->execute_display('views_data_export_1');
+//    // Get the results, and clean the output buffer.
+//    $result = ob_get_contents();
+//    // Clean the buffer.
+//    ob_end_clean();
+//    // Save the results to file.
+//    // Copy file over
+//   file_put_contents($options['output_file'], $result);
+//  
+//  
+//  
+//  return $display;
+//  //exit('<pre>' . print_r($display,1) . '<pre>');
+//  
+//  return views_embed_view('export_product', 'views_data_export_1');
+//}
+
+
+function idevels_gmerchant_init() {
+  if (isset($_GET['bu']) && $_GET['bu'] == 'bu') {
+      $bu = views_embed_view('commerce_item_export', 'views_data_export_1');
+      exit('<pre>' . print_r($bu,1) . '<pre>');
+      file_unmanaged_save_data($bu , 'sites/default/files/import/output.xls', FILE_EXISTS_REPLACE);
+    drupal_exit('bu');
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/**
+ * Implementation of hook_views_api().
+ */
+function idevels_gmerchant_views_api() {
+  return array(
+    'api'  => '3',
+    'path' => drupal_get_path('module', 'idevels_gmerchant'),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function idevels_gmerchant_field_formatter_info() {
+  return array(
+    'idevels_gmerchant_term_reference_hierarchical_text' => array(
+      'label' => t('Idevels hierarchical text'),
+      'field types' => array('taxonomy_term_reference'),
+    ),
+    'idevels_gmerchant_formatted_price' => array(
+      'label' => t('Idevels formatted price'),
+      'field types' => array('commerce_price'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_prepare_view().
+ */
+function idevels_gmerchant_field_formatter_prepare_view($entity_type, $entities, $field, $instances, $langcode, &$items, $displays) {
+  foreach ($displays as $id => $display) {
+    switch ($display['type']) {
+      case 'idevels_gmerchant_term_reference_hierarchical_text':
+        // Extract required field information.
+        $vocabulary = taxonomy_vocabulary_machine_name_load($field['settings']['allowed_values'][0]['vocabulary']);
+        $vid = $vocabulary->vid;
+      
+        // Get the config for this field.
+        module_load_include('inc', 'hierarchical_select', 'includes/common');
+        $config_id = "taxonomy-$vid";
+        $config = hierarchical_select_common_config_get($config_id);
+        $config += array(
+          'module' => 'hs_taxonomy',
+          'params' => array(
+            'vid' => $vid,
+          ),
+        );
+      
+        // Collect every possible term attached to any of the fieldable entities.
+        // Copied from taxonomy_field_formatter_prepare_view().
+        foreach ($entities as $id => $entity) {
+          $selection  = array();
+      
+          foreach ($items[$id] as $delta => $item) {
+            // Force the array key to prevent duplicates.
+            if ($item['tid'] != 'autocreate') {
+              $selection[] = $item['tid'];
+            }
+          }
+      
+          // Generate a dropbox out of the selection. This will automatically
+          // calculate all lineages for us.
+          $dropbox = _hierarchical_select_dropbox_generate($config, $selection);
+      
+          // Store additional information in each item that's required for
+          // Hierarchical Select's custom formatters that are compatible with the
+          // save_lineage functionality.
+          if (!empty($dropbox->lineages)) {
+            foreach (array_keys($dropbox->lineages) as $lineage) {
+              foreach ($dropbox->lineages[$lineage] as $level => $details) {
+                $tid = $details['value'];
+      
+                // Look up where this term (tid) is stored in the items array.
+                $key = array_search($tid, $selection);
+      
+                // Store the additional information. One term can occur in multiple
+                // lineages: when Taxonomy's "multiple parents" functionality is
+                // being used.
+                $items[$id][$key]['hs_lineages'][] = array(
+                  'lineage' => $lineage,
+                  'level'   => $level,
+                  'label'   => $details['label'],
+                  'tid'     => $tid,
+                );
+              }
+            }
+          }
+        }
+        break;
+  
+      case 'idevels_gmerchant_formatted_price':
+        foreach(module_implements('commerce_price_field_formatter_prepare_view') as $module) {
+          $function = $module . '_commerce_price_field_formatter_prepare_view';
+          $function($entity_type, $entities, $field, $instances, $langcode, $items, $displays);
+        }
+        break;
+    }
+  }
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function idevels_gmerchant_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  // Actual formatting.
+  switch ($display['type']) {
+    case 'idevels_gmerchant_term_reference_hierarchical_text':
+      // Extract required field information.
+      $vocabulary = taxonomy_vocabulary_machine_name_load($field['settings']['allowed_values'][0]['vocabulary']);
+    
+      // Extract the lineage information from the items (this was added by
+      // idevels_gmerchant_field_formatter_prepare_view()).
+      $lineages = array();
+      foreach ($items as $delta => $item) {
+        if (!empty($item['hs_lineages'])) {
+          $metadata = $item['hs_lineages'];
+    
+          for ($i = 0; $i < count($metadata); $i++) {
+            $term = new StdClass();
+            $term->tid = $metadata[$i]['tid'];
+            $term->vid = $vocabulary->vid;
+            $term->vocabulary_machine_name = $vocabulary->machine_name;
+            $term->name = $metadata[$i]['label'];
+    
+            $lineages[$metadata[$i]['lineage']][$metadata[$i]['level']] = $term;
+          }
+        }
+      }
+
+      $separator = ' &gt; ';
+      for ($l = 0; $l < count($lineages); $l++) {
+        for ($level = 0; $level < count($lineages[$l]); $level++) {
+          $term = $lineages[$l][$level];
+          $tmp = ($level + 1 == count($lineages[$l])) ? '' : $separator;
+          $element[$l][$level] = array(
+            '#markup' => $term->name . $tmp,
+          );
+        }
+      }
+      break;
+
+    case 'idevels_gmerchant_formatted_price':
+      foreach ($items as $delta => $item) {
+        // Do not render a price if the amount is NULL (i.e. non-zero empty value).
+        if (is_null($item['amount'])) {
+          // TODO: Consider if we should render as N/A or something indicating a
+          // price was not available as opposed to just leaving a blank.
+          continue;
+        }
+        $element[$delta] = array(
+          '#markup' => commerce_currency_amount_to_decimal($item['amount'], $item['currency_code']) . ' ' . $item['currency_code'],
+        );
+      }
+      break;
+  }
+
+  return $element;
+}

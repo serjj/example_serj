@@ -1,0 +1,125 @@
+<?php
+
+/**
+ * @file
+ * Provides an payment method for Drupal Commerce to pay with userpoints.
+ */
+
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function idevels_payment_commerce_payment_method_info() {
+  $payment_methods = array();
+  // Created new payment method.
+  $payment_methods['commerce_payment_userpoints'] = array(
+    'title' => t('userpoints payment'),
+    'description' => t('Demonstrates complete payment during checkout and serves as a development example.'),
+    'active' => TRUE,
+    'base' => 'idevels_commerce_userpoints',
+  );
+
+  return $payment_methods;
+}
+
+
+/**
+ * Payment method callback: submit form.
+ */
+function idevels_commerce_userpoints_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+  $form = array();
+  // Merge in values from the order.
+  if (!empty($order->data['commerce_payment_userpoints'])) {
+    $pane_values += $order->data['commerce_payment_userpoints'];
+  }
+
+  // Merge in default values.
+  $pane_values += array(
+    'name' => '',
+  );
+
+  $form['name'] = array(
+    '#type' => 'hidden',
+    '#title' => t('Name'),
+    '#description' => t('This is a demonstration field coded to fail validation for single character values.'),
+    '#default_value' => $pane_values['name'],
+  );
+
+  return $form;
+}
+
+
+/**
+ * Payment method callback: submit form validation.
+ */
+function idevels_commerce_userpoints_submit_form_validate($payment_method, $pane_form, $pane_values, $order, $form_parents = array()) {
+  // Throw an error if a long enough name was not provided.
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $price = $wrapper->commerce_order_total->amount->value() / 100;
+  $currency_code = $wrapper->commerce_order_total->currency_code->value();
+  $user_uid = $order->uid;
+  $point_user = userpoints_get_current_points($user_uid);
+
+  if ($point_user < $price) {
+    form_set_error('', $message = t("You don\'t have money"));
+    return FALSE;
+  }
+}
+
+
+/**
+ * Payment method callback: submit form submission.
+ */
+function idevels_commerce_userpoints_submit_form_submit($payment_method, $pane_form, $pane_values, $order, $charge) {
+  $order->data['commerce_payment_userpoints'] = $pane_values;
+  idevels_commerce_userpoints_transaction($payment_method, $order, $charge, $pane_values['name']);
+}
+
+
+/**
+ * Creates an example payment transaction for the specified charge amount.
+ *
+ * @param string $payment_method
+ *   The payment method instance object used to charge this payment.
+ * @param object $order
+ *   The order object the payment applies to.
+ * @param string $charge
+ *   An array indicating the amount and currency code to charge.
+ * @param string $name
+ *   The name entered on the submission form.
+ */
+function idevels_commerce_userpoints_transaction($payment_method, $order, $charge, $name) {
+  $wrapper = entity_metadata_wrapper('commerce_order', $order);
+  $price = $wrapper->commerce_order_total->amount->value() / 100;
+  $point_user = userpoints_get_current_points($order->uid);
+  $user_uid = $order->uid;
+
+  // Pay course and created userpoints transaction.
+  if (function_exists('userpoints_userpointsapi')) {
+    $params = array(
+      'uid'          => $user_uid,
+      'approver_uid' => 1,
+      'points'       => -$price,
+      'operation'    => 'published',
+      'display'      => FALSE,
+      'description'  => t('Buyed product'),
+      'reference'    => '',
+    );
+    userpoints_userpointsapi($params);
+  }
+  $balance = $point_user - $price;
+  db_update('userpoints')
+    ->fields(array('points' => $balance))
+    ->condition('uid', $user_uid)
+    ->execute();
+
+  $transaction = commerce_payment_transaction_new('commerce_payment_userpoints', $order->order_id);
+  $transaction->instance_id = $payment_method['instance_id'];
+  $transaction->amount = $charge['amount'];
+  $transaction->currency_code = $charge['currency_code'];
+  $transaction->status = COMMERCE_PAYMENT_STATUS_SUCCESS;
+  $transaction->message = 'Name: @name';
+  $transaction->message_variables = array('@name' => $name);
+
+  commerce_payment_transaction_save($transaction);
+}

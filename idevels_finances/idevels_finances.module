@@ -1,0 +1,1129 @@
+<?php
+
+/**
+ * @file
+ * Modul to functional paymant.
+ */
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function idevels_finances_ctools_plugin_directory($owner, $plugin_type) {
+  if ($owner == 'ctools') {
+    return "plugins/{$plugin_type}";
+  }
+}
+
+
+/**
+ * Implements hook_menu().
+ */
+function idevels_finances_menu() {
+  $items = array();
+  $items['finances'] = array(
+    'page callback'    => 'idevels_finances_page',
+    'access callback'  => TRUE,
+    'type'             => MENU_NORMAL_ITEM,
+  );
+  $items['transfer_money'] = array(
+    'title'            => 'Transfer money another user.',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('idevels_finances_commission_form'),
+    'access arguments' => array('idevels_transfer_money'),
+    'type'             => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_menu_alter().
+ */
+function idevels_finances_menu_alter(&$items) {
+  $items['cart'] = $items['cart/%ctools_js'] = array(
+    'page callback'    => 'idevels_finances_ctools_modal_review',
+    'page arguments'  => array(1),
+    'access callback' => TRUE,
+    'type'            => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+
+/**
+ * Implements hook_permission().
+ */
+function idevels_finances_permission() {
+  return array(
+    'idevels_free_pay' => array(
+      'title' => t('Free paid order'),
+      'description' => t('Attention! It is right to give only to those who would like to submit a freebie.'),
+    ),
+    'idevels_repor_order' => array(
+      'title' => t('See report order'),
+      'description' => t('open access to page report-all-order'),
+    ),
+    'idevels_transfer_money' => array(
+      'title' => t('Transfer_money'),
+      'description' => t('Transfer money to another user in site'),
+    ),
+  );
+}
+
+
+/**
+ * Implements hook_block_info().
+ */
+function idevels_finances_block_info() {
+  $blocks['cart_in_page'] = array(
+    'info' => t('button_cart'),
+  );
+  $blocks['transaction_userpoints'] = array(
+    'info' => t('Output transaction userpoints in table and check checksum'),
+  );
+  $blocks['my-accounting'] = array(
+    'info' => t('Output transaction userpoints and form add money to user'),
+  );
+  return $blocks;
+}
+
+/**
+ * Implements hook_block_view().
+ */
+function idevels_finances_block_view($delta = '') {
+  global $user;
+  switch ($delta) {
+
+    // Output block with link to popup commerce cart.
+    case 'cart_in_page':
+      $block['content'] = ctools_modal_text_button(t('Cart'), 'cart/nojs', t('Cart'), 'ctools-modal-happy-modal-style');
+      break;
+
+    // Output all transaction user and check checksum.
+    case 'transaction_userpoints':
+      // Select all transaction user.
+      $user_transaction = db_select('userpoints_txn', 'u')
+        ->fields('u', array('txn_id', 'points', 'time_stamp', 'description'))
+        ->condition('u.uid', $user->uid)
+        ->execute()
+        ->fetchAll();
+      foreach ($user_transaction as $k => $data) {
+        $date[$k] = date('d.m.Y G:i:s', $data->time_stamp);
+        $descr[$k] = $data->description;
+        $points[$k] = $data->points;
+        $txn_id[$k] = $data->txn_id;
+        $header = array(
+          array('data' => t('date/time')),
+          array('data' => t('description tr')),
+          array('data' => t('sum KEM')),
+        );
+        $rows[$k] = array(
+          array('data' => date('d.m.Y G:i:s', $data->time_stamp)),
+          array('data' => $data->description),
+          array('data' => $data->points),
+        );
+        $query = db_select('field_data_field_tid', 'f_tid')
+          ->fields('f_hash', array('field_hash_value'))
+          ->condition('f_tid.field_tid_value', $txn_id[$k]);
+        $query->join('field_data_field_hash', 'f_hash', 'f_hash.entity_id = f_tid.entity_id');
+        $hash_order = $query->execute()->fetchField();
+        $hash_new = md5($user->uid . $data->points . $data->time_stamp);
+        /*if ($hash_new != $hash_order) {
+          watchdog(t('ATTENTION HASH DO NOT MATCH'), "<pre><strong>Txn_id is $data->txn_id:</strong></pre>");
+          $to = variable_get('idevels_user_mail_send');
+          $txn_id = $data->txn_id;
+          drupal_mail('system', 'mail', $to, language_default(), array(
+            'context' => array(
+              'subject' => t('hash do not match'),
+              'message' => t('<strong>Txn_id is number order: !txn_id</strong>', array('!txn_id' => $txn_id)),
+            ),
+          ));
+        }*/
+      }
+      $block['content'] = theme('table', array('header' => $header, 'rows' => $rows));
+      break;
+
+    case 'my-accounting':
+      global $user;
+      // Add checking transfer money.
+      $money = db_select('userpoints', 'u')
+        ->fields('u', array('points'))
+        ->condition('u.uid', $user->uid)
+        ->execute()
+        ->fetchAssoc();
+      $text .= '<div class="text-money">' . t('Here you can purchase a notional currency of our website WHOM costs $1 per 100KEM') . '</div>';
+      if ($money != 0) {
+        $output = '<div class="balance">' . t('Balance: @money', array('@money' => $money['points'])) . '</div>';
+        $output .= $text;
+        $output .= drupal_render(drupal_get_form('idevels_finances_order_form'));
+      }
+      else {
+        $output = '<div class="balance">' . t('Balance: 0') . '</div>';
+        $output .= $text;
+        $output .= drupal_render(drupal_get_form('idevels_finances_order_form'));
+
+      }
+      $block['content'] = $output;
+      break;
+
+  }
+  return $block;
+}
+
+
+/**
+ * Implements hook_rules_action_info().
+ */
+function idevels_finances_rules_action_info() {
+  $actions['idevels_finances_add_to_cart_message'] = array(
+    'label' => t('Display Add to Cart message'),
+    'parameter' => array(
+      'commerce_product' => array(
+        'type' => 'commerce_product',
+        'label' => t('Product added to the cart'),
+      ),
+    ),
+    'group' => t('Commerce Cart'),
+    'callbacks' => array(
+      'execute' => 'idevels_finances_rules_add_to_cart_message',
+    ),
+  );
+
+  return $actions;
+}
+
+
+/**
+ * Rules action: displays a the default translatable Add to Cart message.
+ */
+function idevels_finances_rules_add_to_cart_message($product) {
+  drupal_set_message(t('%title added to !cart-url.', array('%title' => $product->title, '!cart-url' => l(t('your cart'), 'cart/nojs'))));
+}
+
+
+/**
+ * Alter commerce currencies.
+ */
+function idevels_finances_commerce_currency_info_alter(&$currencies, $langcode) {
+  $currencies['EUR']['symbol'] = 'KEM';
+}
+
+
+/**
+ * Implements callback to ctools popup.
+ */
+function idevels_finances_ctools_modal_review($js = NULL) {
+  ctools_include('modal');
+  ctools_include('ajax');
+  module_load_include('inc', 'commerce_cart', 'includes/commerce_cart.pages');
+  $contents = render(commerce_cart_view());
+
+  if (!$js) {
+    return render(commerce_cart_view());
+  }
+
+  return ctools_modal_render($contents, '');
+}
+
+
+/**
+ * Implements hook_form_alert().
+ */
+function idevels_finances_form_alter(&$form, &$form_state, $form_id) {
+  // Add description to useproints transaction.
+  if ($form_id == 'userpoints_admin_txn') {
+    $form['reason']['description']['#default_value'] = t('admin add money');
+  }
+  // Add ajax to button remove in commerce cart.
+  if ($form_id == 'views_form_commerce_cart_form_default') {
+    $form['actions']['submit']['#type'] = 'hidden';
+    $form['actions']['checkout']['#validate'] = array('idevels_finances_form_cart_validate');
+    foreach ($form['edit_delete'] as $k => $v) {
+      if (is_numeric($k)) {
+        $form['edit_delete'][$k]['#ajax'] = array('callback' => 'idevels_finances_remove_row_cart_form_ajax');
+      }
+    }
+  }
+  if ($form_id == 'group_node_form') {
+    $lang = field_language('node', $form['#node'], 'field_price');
+    $form['field_price'][$lang][0]['amount']['#field_suffix'] = 'KEM';
+  }
+}
+
+
+/**
+ * Add validate to commerce cart form.
+ */
+function idevels_finances_form_cart_validate ($form, &$form_state) {
+  $total_sum = $form_state['order']->commerce_order_total['und'][0]['amount'] / 100;
+  $uid = $form_state['order']->uid;
+  $money_carent_user = userpoints_get_current_points($uid);
+  if ($money_carent_user < $total_sum) {
+    form_set_error('', t('you dont have money'));
+  }
+}
+
+/**
+ * Callback to ajax form idevels_guru_add_answers_form().
+ */
+function idevels_finances_remove_row_cart_form_ajax($form, $form_state) {
+  global $user;
+
+  $commands = array();
+
+  // Get new total price.
+  $cart = commerce_cart_order_load($user->uid);
+  $lang = field_language('commerce_order', $cart, 'commerce_line_items');
+  $count = count($cart->commerce_line_items[$lang]);
+  if ($count == 0) {
+    $select = '.commerce-line-item-views-form';
+    $text = t('Your shopping cart is empty.');
+    $commands[] = ajax_command_replace($select, $text, $settings = NULL);
+  }
+  elseif ($count >= 1) {
+    $total = $cart->commerce_order_total[$lang][0]['amount'];
+    $total_l = $total % 100;
+    if ($total_l == 0) {
+      $total_l = '00';
+    }
+    $total_1 = $total / 100;
+    $total_f = "<span class='line-item-total-raw'>$total_1,$total_l €</span>";
+
+    // Forming array with ajax commands.
+    $lid = $form_state['triggering_element']['#line_item_id'];
+    $commands[] = ajax_command_remove(".class-$lid");
+    $commands[] = ajax_command_replace('.line-item-total-raw', $total_f, $settings = NULL);
+  }
+
+  return array('#type' => 'ajax', '#commands' => $commands);
+}
+
+
+/**
+ * Implements callback function idevels_finances_page().
+ */
+function idevels_finances_page() {
+  // Checking data that have came.
+  if (isset($_POST['hash']) && strlen($_POST['hash']) == 32) {
+    if (is_numeric($_POST['account_id']) && is_numeric($_POST['user_id']) && is_numeric($_POST['sum']) && is_numeric($_POST['date']) && is_numeric($_POST['method'])) {
+      $md = md5($_POST['account_id'] . $_POST['user_id'] . $_POST['sum'] . $_POST['date'] . $_POST['method'] . 'siz');
+      if ($_POST['hash'] == $md) {
+
+        // Is formed array data for userpoints.
+        $params = array(
+          'uid'          => $_POST['user_id'],
+          'approver_uid' => 1,
+          'points'       => $_POST['sum'],
+          'operation'    => $_POST['method'],
+          'description'  => t('Add maney'),
+          'reference'    => '',
+          'entity_id'    => $_POST['account_id'],
+        );
+        $status = _userpoints_transaction($params);
+        if ($status) {
+
+          // Select money carent user.
+          $points_date = db_select('userpoints', 'u')
+            ->fields('u', array('points', 'max_points'))
+            ->condition('u.uid', $_POST['user_id'])
+            ->execute()
+            ->fetchAssoc();
+          $sum = $_POST['sum'];
+          $result = $points_date['points'] + $sum;
+          if ($result > $points_date['max_points']) {
+            $points_date['max_points'] = $result;
+          }
+
+          // Add money for user and write message.
+          db_update('userpoints')
+            ->fields(array(
+              'points ' => $result,
+              'max_points' => $points_date['max_points'],
+              'last_update' => REQUEST_TIME))
+            ->condition('uid', $_POST['user_id'])
+            ->execute();
+          drupal_set_message(t('Your account has been promoted on !sum $', array('!sum' => $sum)));
+        }
+      }
+    }
+    else {
+      drupal_set_massage('There are no all parameters in your request');
+    }
+  }
+  return '';
+}
+
+
+/**
+ * Gunction created userpoints transaction.
+ *
+ * @param integer $uid
+ *   Id user ho want add money.
+ *
+ * @param integer $money
+ *   Amount sum was add to user.
+ *
+ * @param string $descr
+ *   Description userpoints transaction.
+ *   Must be in function t().
+ *
+ * @param boolean $show_mess
+ *   If True message about add transaction was show.
+ *
+ * @return integer
+ *   Status transaction.
+ */
+function idevels_finances_add_money_userpoints ($uid, $money, $descr, $show_mess) {
+  $params = array(
+    'uid'          => $uid,
+    'approver_uid' => 1,
+    'points'       => $money,
+    'operation'    => 'published',
+    'display'      => $show_mess,
+    'description'  => $descr,
+    'reference'    => '',
+  );
+  $result = userpoints_userpointsapi($params);
+
+  return $result;
+}
+
+
+/**
+ * Implements callback idevels_finances_my_accounting().
+ */
+function idevels_finances_my_accounting() {
+  global $user;
+  // Add checking transfer money.
+  $money = db_select('userpoints', 'u')
+    ->fields('u', array('points'))
+    ->condition('u.uid', $user->uid)
+    ->execute()
+    ->fetchAssoc();
+  if ($money != 0) {
+    $output = drupal_render(drupal_get_form('idevels_finances_order_form'));
+    $output .= '<div class="balance">' . t('Balance: @money', array('@money' => $money['points'])) . '</div>';
+  }
+  else {
+    $output = drupal_render(drupal_get_form('idevels_finances_order_form'));
+    $output .= '<div class="balance">' . t('Balance: 0') . '</div>';
+
+  }
+  return $output;
+}
+
+
+/**
+ * Function add userpoints user from pay2pay merchaint, after success payment.
+ *
+ * @param integer $order_id
+ *   Order_id was add money to user.
+ */
+function idevels_finances_pay2pay_add_userpoints($order_id) {
+  // Load commerce order.
+  $order_data = commerce_order_load($order_id);
+  // Load commerce line items objact.
+
+  $lid = $order_data->commerce_line_items['und'][0]['line_item_id'];
+  $line_items = commerce_line_item_load($lid);
+  // Load commerce product objact.
+  $prod_id = $line_items->commerce_product['und'][0]['product_id'];
+  $prod_data = commerce_product_load($prod_id);
+
+  // Load node was created to report payment.
+  $nid = $prod_data->sku;
+  $node_data = node_load($nid);
+  $lang_payed = field_language('node', $node_data, 'field_payed');
+  $lang_price = field_language('node', $node_data, 'field_price');
+  $money = $node_data->field_price[$lang_price][0]['amount'] / 100;
+
+
+  // Foming array add money to user.
+  $uid = $order_data->uid;
+  $descr = t('Add money from Pay2Pay');
+  $show_mess = FALSE;
+  // Created userpoints transaction and add money to user.
+  $result = idevels_finances_add_money_userpoints ($uid, $money, $descr, $show_mess);
+
+  if ($result['status'] == 1) {
+    $node_data->field_payed[$lang_payed][0]['value'] = 1;
+    $node_data->field_tid[$lang_payed][0]['value'] = $result['transaction']['txn_id'];
+    // Created hash node order.
+    $params = $result['transaction'];
+    $hash = md5($params['uid'] . $params['points'] . $params['time_stamp']);
+    $node_data->field_hash[$lang_payed][0]['value'] = $hash;
+    $node_data->field_hash[$lang_payed][0]['safe_value'] = $hash;
+    node_save($node_data);
+  }
+  drupal_set_message(t('You transaction to add !total KEM success!', array('!total' => $money)));
+  drupal_goto('my-accounting');
+}
+
+
+/**
+ * Function add userpoints user from pay2pay merchaint, after success payment.
+ */
+function idevels_finances_2checkout_add_userpoints() {
+  $total = $_POST['total'];
+
+  // Load commerce order.
+  $order_data = commerce_order_load($_POST['merchant_order_id']);
+  // Load commerce line items objact.
+  $lid = $order_data->commerce_line_items['und'][0]['line_item_id'];
+  $line_items = commerce_line_item_load($lid);
+  // Load commerce product objact.
+  $prod_id = $line_items->commerce_product['und'][0]['product_id'];
+  $prod_data = commerce_product_load($prod_id);
+  // Load node was created to report payment.
+  $nid = $prod_data->sku;
+  $node_data = node_load($nid);
+  $lang_payed = field_language('node', $node_data, 'field_payed');
+
+  // Foming array add money to user.
+  $uid = $order_data->uid;
+  $money = $total;
+  $descr = t('Add money from 2Checkout');
+  $show_mess = FALSE;
+  // Created userpoints transaction and add money to user.
+  $result = idevels_finances_add_money_userpoints ($uid, $money, $descr, $show_mess);
+  if ($result['status'] == 1) {
+    $node_data->field_payed[$lang_payed][0]['value'] = 1;
+    $node_data->field_tid[$lang_payed][0]['value'] = $result['transaction']['txn_id'];
+    // Created hash node order.
+    $params = $result['transaction'];
+    $hash = md5($params['uid'] . $params['points'] . $params['time_stamp']);
+    $node_data->field_hash[$lang_payed][0]['value'] = $hash;
+    $node_data->field_hash[$lang_payed][0]['safe_value'] = $hash;
+    node_save($node_data);
+  }
+  drupal_set_message(t('You transaction to add !total KEM success!', array('!total' => $total)));
+}
+
+
+/**
+ * Implements form to transfer userpoints between user.
+ */
+function idevels_finances_commission_form($form, &$form_state) {
+  global $user;
+
+  // Set commission from variables.
+  $commission = variable_get('idevels_commission');
+
+  // Forming array form.
+  $form['#title'] = 'Transfer money another user.';
+  $form['idevels_user'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Choose a user ho you wont transfer money !required', array('!required' => '<span class="form-required">*</span>')),
+    // The autocomplete path is provided in hook_menu in ajax_example.module.
+    '#autocomplete_path' => 'user/autocomplete',
+  );
+  $form['idevels_money'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Enter sum was you want transfer !required', array('!required' => '<span class="form-required">*</span>')),
+  );
+  $form['idevels_discription'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Enter discription to transfer !required', array('!required' => '<span class="form-required">*</span>')),
+  );
+  $form['idevels_button_state'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Click the checkbox to confirm the removal of commission'),
+  );
+  $form['idevels_carent_user'] = array(
+    '#type' => 'hidden',
+    '#value' => $user->uid,
+  );
+  $form['idevels_test'] = array(
+    '#markup' => t('<strong>You will be charged with the commission in the amount of @commission persent</strong>', array('@commission' => $commission)),
+  );
+  $form['idevels_submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Transfer'),
+    '#title' => t('Enter discription to transfer'),
+    '#states' => array(
+      // Hide the settings when the cancel notify checkbox is disabled.
+      'visible' => array(
+        ':input[name="idevels_button_state"]' => array('checked' => TRUE),
+      ),
+    ),
+  );
+  return $form;
+}
+
+
+/**
+ * Implements validate form to transfer userpoints between user.
+ */
+function idevels_finances_commission_form_validate($form, &$form_state) {
+  // Set form error when enter no numeric or empty fields.
+  $money = $form_state['values']['idevels_money'];
+  if (empty($form_state['values']['idevels_money'])) {
+    form_set_error('idevels_money', t('Input money'));
+  }
+  if (!is_numeric($money)) {
+    form_set_error('idevels_money', t('Input only numeric'));
+  }
+  if ($money <= 0) {
+    form_set_error('idevels_money', t('Input only positive values'));
+  }
+  if (empty($form_state['values']['idevels_user'])) {
+    form_set_error('idevels_user', t('Input user'));
+  }
+  if (empty($form_state['values']['idevels_discription'])) {
+    form_set_error('idevels_discription', t('Input discription'));
+  }
+  // Check enter user.
+  $login_user = $form_state['values']['idevels_user'];
+  $carent_user = user_load($form_state['values']['idevels_carent_user']);
+
+  $user_id = db_select('users', 'u')
+    ->fields('u', array('uid'))
+    ->condition('u.name', $login_user)
+    ->execute()
+    ->fetchField();
+  if (empty($user_id)) {
+    form_set_error('idevels_user', t('Input valid user'));
+  }
+  else {
+    $form_state['values']['user_id'] = $user_id;
+  }
+  // Can't transfer funds to yourself.
+  if ($user_id == $carent_user->uid) {
+    form_set_error('idevels_user', t("You can\'t transfer money to yourself."));
+  }
+}
+
+
+/**
+ * Implements submit form to transfer userpoints between user.
+ */
+function idevels_finances_commission_form_submit($form, &$form_state) {
+
+  $commission = variable_get('idevels_commission');
+  $money_carent_user = userpoints_get_current_points($form_state['values']['idevels_carent_user']);
+  $money_to_user = $form_state['values']['idevels_money'] - ($form_state['values']['idevels_money'] * $commission / 100);
+  $money_from_user = round($form_state['values']['idevels_money'], 2);
+  $money_to_user = round($money_to_user, 2);
+
+  // Check money user.
+  if ($money_carent_user > $money_from_user) {
+    $login_user = $form_state['values']['idevels_user'];
+    $carent_user = user_load($form_state['values']['idevels_carent_user']);
+    // Select id user ho transfer money.
+    $user_id = $form_state['values']['user_id'];
+
+    $params_to_user = array(
+      'uid'          => $user_id,
+      'approver_uid' => 1,
+      'points'       => $money_to_user,
+      'operation'    => 'published',
+      'display'      => FALSE,
+      'description'  => t('Transfer money from !user', array('!user' => $carent_user->name)),
+      'reference'    => '',
+    );
+    $params_from_user = array(
+      'uid'          => $carent_user->uid,
+      'approver_uid' => 1,
+      'points'       => -$money_from_user,
+      'operation'    => 'published',
+      'display'      => FALSE,
+      'description'  => t('Transfer money to !user', array('!user' => $login_user)),
+      'reference'    => '',
+    );
+    userpoints_userpointsapi($params_to_user);
+    userpoints_userpointsapi($params_from_user);
+
+    $message = t('your transfer to !user - !money KEM complet!', array('!user' => $login_user, '!money' => $money_from_user));
+    drupal_set_message($message);
+  }
+  else {
+    drupal_set_message(t('You don have money to transer'), 'error');
+  }
+}
+
+
+/**
+ * Implements hook_node_save().
+ */
+function idevels_finances_node_insert($node) {
+  $array_node_type = array('order' => 'order', 'group' => 'group', 'course' => 'course');
+  if (array_key_exists($node->type, $array_node_type)) {
+    if ($node->type == 'order') {
+      $product_type = 'order';
+      $node->title = $node->nid;
+    }
+    if ($node->type == 'group') {
+      $product_type = 'order_userpoints_group';
+    }
+    if ($node->type == 'course') {
+      $product_type = 'order_userpoints';
+    }
+
+    // Create new object commerce product after created node.
+    $method = field_get_items('node', $node, 'field_metod_oplat');
+    if ($method[0]['value'] != 'admin added money') {
+      $product = commerce_product_new($product_type);
+
+      $product->title = $node->title;
+      $lang = field_language('node', $node, 'title');
+      $lang_product = field_language('node', $node, 'field_product');
+      $price = field_get_items('node', $node, 'field_price');
+      if (empty($price)) {
+        $node->field_price[field_language('node', $node, 'field_price')][0]['amount'] = 0;
+        $node->field_price[field_language('node', $node, 'field_price')][0]['currency_code'] = 'EUR';
+        $product->commerce_price[LANGUAGE_NONE][0]['amount'] = 0;
+      }
+      $product->commerce_price[LANGUAGE_NONE][0]['amount'] = $price[0]['amount'];
+      $product->commerce_price[LANGUAGE_NONE][0]['currency_code'] = 'EUR';
+      $product->sku = $node->nid;
+      $product->language = $lang;
+      // Save product to stor.
+      commerce_product_save($product);
+      // Record in field product references,
+      // For new course, product was created.
+      $node->field_product[LANGUAGE_NONE][0]['product_id'] = $product->product_id;
+      unset($node->is_new);
+      node_save($node);
+    }
+    else {
+      $node->title = t('admin added money');
+      unset($node->is_new);
+      node_save($node);
+    }
+  }
+}
+
+
+/**
+ * Function to add money from interkassa.
+ */
+function idevels_finances_interkassa_add_userpoints($order_id) {
+  // Load commerce order.
+  $order_data = commerce_order_load($order_id);
+  // Load commerce line items objact.
+  $lid = $order_data->commerce_line_items['und'][0]['line_item_id'];
+  $line_items = commerce_line_item_load($lid);
+  // Load commerce product objact.
+  $prod_id = $line_items->commerce_product['und'][0]['product_id'];
+  $prod_data = commerce_product_load($prod_id);
+  // Load node was created to report payment.
+  $nid = $prod_data->sku;
+  $node_data = node_load($nid);
+  $lang_payed = field_language('node', $node_data, 'field_payed');
+  $price = field_get_items('node', $node_data, 'field_price');
+  // Foming array add money to user.
+  $uid = $order_data->uid;
+  $money = $price[0]['amount'] / 100;
+  $descr = t('Add money from Interkassa - from !alias', array('!alias' => $_POST['ik_paysystem_alias']));
+  $show_mess = FALSE;
+  // Created userpoints transaction and add money to user.
+  $result = idevels_finances_add_money_userpoints ($uid, $money, $descr, $show_mess);
+  if ($result['status'] == 1) {
+    $node_data->field_payed[$lang_payed][0]['value'] = 1;
+    $node_data->field_tid[$lang_payed][0]['value'] = $result['transaction']['txn_id'];
+    // Created hash node order.
+    $params = $result['transaction'];
+    $hash = md5($params['uid'] . $params['points'] . $params['time_stamp']);
+    $node_data->field_hash[$lang_payed][0]['value'] = $hash;
+    $node_data->field_hash[$lang_payed][0]['safe_value'] = $hash;
+    node_save($node_data);
+  }
+  drupal_set_message(t('You transaction to add !total KEM success!', array('!total' => $money)));
+}
+
+
+
+/**
+ * Implements hook_commerce_checkout_complete().
+ *
+ * Hook work only after success payment.
+ */
+function idevels_finances_commerce_checkout_complete($order) {
+  // Add userpoints from 2checkout.
+  if (!empty($_POST) && !empty($_POST['sid']) && $_POST['sid'] == 2063667) {
+    idevels_finances_2checkout_add_userpoints();
+    drupal_goto('my-accounting');
+  }
+  // Add userpoints from interkassa.
+  if (!empty($_POST) && !empty($_POST['ik_payment_state']) && $_POST['ik_payment_state'] == 'success') {
+    idevels_finances_interkassa_add_userpoints($_POST['ik_payment_id']);
+    drupal_goto('my-accounting');
+  }
+
+  // Select cours nid and user id for record cours to schedule user.
+  $user_uid = $order->uid;
+  $com_line_items = field_get_items('commerce_order', $order, 'commerce_line_items');
+
+  foreach ($com_line_items as $k => $l) {
+    // Select line items id form order.
+    $lid = $l['line_item_id'];
+    $lini_obj = commerce_line_item_load($lid);
+
+    // Select product id from line item object this order.
+    $pr = field_get_items('commerce_line_item', $lini_obj, 'commerce_product');
+    $pr_id = $pr[0]['product_id'];
+    $prod = commerce_product_load($pr_id);
+
+    // Select product type for everyone product.
+    $product_type = $prod->type;
+
+    // For different types of products different operations.
+    switch ($product_type) {
+
+      // Invite to group that were bought.
+      case 'order_userpoints':
+        // Select nid with line item.
+        $nid = $lini_obj->data['context']['entity']['entity_id'];
+        $uid = $user_uid;
+        // Place lecture in schedule course and sand mail.
+        idevels_finances_place_course($nid, $uid);
+        break;
+
+      // Add to member group that were bought.
+      case 'order_userpoints_group':
+        // Select group nid, gid group and load user.
+        $nid = $lini_obj->line_item_label;
+        $gid = og_get_group_ids('node', array($nid));
+        $account = user_load($user_uid);
+        // Forming array data for subscribe user.
+        $values = array();
+        $values['entity'] = $account;
+        $values['entity_type'] = 'user';
+        $values['state'] = OG_STATE_ACTIVE;
+        // Save carent user to role member.
+        og_group($gid[$nid], $values);
+        $node = node_load($nid);
+        $user_admin = user_load($node->uid);
+        $to = $user_admin->mail;
+        drupal_mail('system', 'mail', $to, language_default(), array(
+          'context' => array(
+            'subject' => t('Buyed access to group'),
+            'message' => t('!ho_buy buyed access to group !group_titl', array('!ho_buy' => $account->name, '!group_titl' => $node->title)),
+          ),
+        ));
+        break;
+    }
+  }
+  unset($_SESSION['idevels_payment_transaction']);
+}
+
+
+/**
+ * Function to place in the schedule of lectures and join the group course.
+ *
+ * @param int $nid
+ *   id nodes which are bought.
+ * @param int $uid
+ *   id user who buy course.
+ */
+function idevels_finances_place_course($nid, $uid) {
+
+  $course_node = node_load($nid);
+  // Сhoice last schedule carent user.
+  $query = db_select('field_data_field_schedule', 'f');
+  $query->innerJoin('schedule', 's', 's.sid = f.entity_id');
+  $query->condition('s.user', $uid);
+  $query->condition('f.entity_type', 'schedule');
+  $query->orderBy('f.field_schedule_url', 'DESC');
+  $query->fields('f', array('field_schedule_url'));
+  $last_lecture = $query->execute()->fetchField();
+  // Record lectures in schedule and entity schedule.
+  $course_title = $course_node->title;
+  $field_lecture = field_get_items('node', $course_node, 'field_lectures');
+  $field_lecture_lang = field_language('node', $course_node, 'field_lectures');
+  $field_count_lect = field_language('node', $course_node, 'field_count_users');
+  $course_node->field_count_users[$field_count_lect][0]['value'] = $course_node->field_count_users[$field_count_lect][0]['value'] + 1;
+  node_save($course_node);
+  // Forming array encity schedule.
+  $value = array(
+    'user'   => $uid,
+    'course' => $nid,
+    'date'   => REQUEST_TIME,
+    'field_schedule' => '',
+  );
+  // Placement of lectures in schedule.
+  $schedule = new Entity($value, 'schedule');
+  $i = 0;
+  $null_value = 0;
+
+  // Select all lectures in course.
+  foreach ($course_node->field_lectures[$field_lecture_lang] as $lectures) {
+    $lecture = node_load($lectures['nid']);
+    $lecture_lang = field_language('node', $lecture, 'field_open_day');
+
+    // Select all fields field_open_day in lecture.
+    foreach ($lecture->field_open_day[$lecture_lang] as $open_day) {
+
+      // Сheck whether the user's other courses.
+      if ($last_lecture) {
+
+        // If have other courses check time of last lecture.
+        // If it after today write date form moment of course buy.
+        if ($last_lecture < REQUEST_TIME && date('d m Y', $last_lecture) != date('d m Y', REQUEST_TIME)) {
+          $date = $open_day['value'] * 86400 + REQUEST_TIME;
+        }
+
+        // If it befor today write date from moment of the last lecture.
+        else {
+          if ($open_day['value'] == 0) {
+            $null_value = 1;
+          }
+          $date = $open_day['value'] * 86400 + $last_lecture;
+        }
+      }
+
+      // If user haven't another courses, write date from moment of buy course.
+      else {
+        $date = $open_day['value'] * 86400 + REQUEST_TIME;
+      }
+
+      // Write lectures in schedule.
+      $schedule->field_schedule[field_language('schedule', $schedule, 'field_schedule')][$i]['title'] = $lectures['nid'];
+      $schedule->field_schedule[field_language('schedule', $schedule, 'field_schedule')][$i]['url'] = $date;
+      $i++;
+    }
+  }
+
+  // If user buy course with lecture with field field_open_day = 0
+  // When he have another courses, all schedule this course adds 1 day.
+  if ($null_value == 1) {
+    $n = 0;
+    foreach ($schedule->field_schedule[field_language('schedule', $schedule, 'field_schedule')] as $url) {
+      $schedule->field_schedule[field_language('schedule', $schedule, 'field_schedule')][$n]['url'] = $url['url'] + 86400;
+      $n++;
+    }
+  }
+  // Created new entity schedule.
+  // Record in schedule and user account.
+  schedule_save($schedule);
+  $account = user_load($uid);
+  $shedule_sid = db_select('schedule', 's')
+    ->fields('s', array('sid'))
+    ->condition('s.course', $nid)
+    ->condition('s.user', $uid)
+    ->execute()
+    ->fetchAssoc();
+  foreach ($shedule_sid as $s) {
+    $sid = $s;
+  }
+  $link_schedule = array('title' => $course_node->title, 'url' => 'schedule/' . $sid);
+  $field_schedule_lang = field_language('user', $account, 'field_schedule');
+  $account->field_schedule[$field_schedule_lang][] = $link_schedule;
+  user_save($account);
+
+  // Connect the user to the group.
+  $field_group = field_get_items('node', $course_node, 'field_group');
+  if (isset($field_group) && !empty($field_group)) {
+    $gid = db_select('og', 'o')
+      ->fields('o', array('gid'))
+      ->condition('o.etid', $field_group[0]['nid'])
+      ->execute()
+      ->fetchAssoc();
+    if (isset($gid) && !empty($gid)) {
+      $group_audience  = (object) array(
+        'type'        => 'og_membership_type_default',
+        'etid'        => $uid,
+        'entity_type' => 'user',
+        'gid'         => $gid['gid'],
+        'state'       => 1,
+        'created'     => REQUEST_TIME,
+      );
+      drupal_write_record('og_membership', $group_audience);
+    }
+  }
+
+  if ($_GET['q'] != 'admin/config/sdo_menu/add_schedule') {
+    drupal_set_message(t('You can see all in !link', array('!link' => l(t('My schedules'), 'my-schedules'))));
+  }
+
+  // Select lectures for today.
+  $query = db_select('field_data_field_schedule', 'f');
+  $query->innerJoin('schedule', 's', 's.sid = f.entity_id');
+  $query->condition('s.user', $uid);
+  $query->condition('f.entity_type', 'schedule');
+  $query->fields('f', array('field_schedule_url', 'field_schedule_title'));
+  $result = $query->execute();
+
+  $count_lectures = 1;
+  $lecture_descr = '';
+  foreach ($result as $l) {
+    if (date('d.m.Y', $l->field_schedule_url) == date('d.m.Y')) {
+      $node = node_load($l->field_schedule_title);
+      $node_descr = field_get_items('node', $node, 'field_tdescr');
+      $timetable_descr = strip_tags($node_descr[0]['value']);
+      $course_id = field_get_items('node', $node, 'field_course_id');
+      $course = node_load($course_id[0]['nid']);
+      $course_title = t('!course. Task for:!date', array('!course' => $course->title, '!date' => date('d.m.Y')));
+      $lecture_descr .= '<p style="font-weight: bold; text-align: center;">' . t('!descr', array('!descr' => $timetable_descr));
+      $count_lectures++;
+    }
+  }
+
+  // Send mail user after buy course.
+  $to = $account->mail;
+  drupal_mail('system', 'mail', $to, language_default(), array(
+    'context' => array(
+      'subject' => $course_title,
+      'message' => $lecture_descr,
+    ),
+  ));
+}
+
+
+/**
+ * Implements hook_form().
+ *
+ * Form to pay content order.
+ */
+function idevels_finances_order_form($form, &$form_state) {
+  global $user;
+
+  $form['#prefix'] = '<div>';
+  $form['#suffix'] = '</div>';
+  // Forming form to account updating.
+  $form['price'] = array(
+    '#title'  => t('Enter the amount of payment'),
+    '#type'   => 'textfield',
+    '#size'   => 10,
+  );
+  $form['pay'] = array(
+    '#type' => 'radios',
+    '#options' => array(
+      // TODO: comment to includ new payment system.
+      '2checkout|commerce_payment_2checkout' => t('2Checkout'),
+      // 'commerce_robokassa|commerce_payment_commerce_robokassa' => t('ROBOKASSA'),
+      // 'commerce_liqpay|commerce_payment_commerce_liqpay' => t('LiqPay'),
+      // 'commerce_webmoney|commerce_payment_commerce_webmoney' => t('WebMoney'),
+      'commerce_pay2pay|commerce_payment_commerce_pay2pay' => t('Pay2pay'),
+      'commerce_interkassa|commerce_payment_commerce_interkassa' => t('Interkassa'),
+    ),
+    '#title' => t('Select your payment option'),
+  );
+  $form['nid'] = array(
+    '#value'  => 1,
+    '#type'   => 'hidden',
+  );
+  $form['user_uid'] = array(
+    '#value'  => $user->uid,
+    '#type'   => 'hidden',
+  );
+  $form['submit'] = array(
+    '#value'  => t('Pay'),
+    '#type'   => 'submit',
+  );
+
+  $form['#method'] = 'post';
+  return $form;
+}
+
+
+/**
+ * Implements hook_form_validate().
+ *
+ * Validate to form pay order.
+ */
+function idevels_finances_order_form_validate($form, &$form_state) {
+  // Select cart carent user.
+  $user_id = $form_state['values']['user_uid'];
+  $cart = commerce_cart_order_load($user_id);
+  if ($cart) {
+    $line_item_cart = field_get_items('commerce_order', $cart, 'commerce_line_items');
+  }
+  // Сheck whether the entered price.
+  if (empty($form_state['values']['price'])) {
+    form_set_error('price', t('Enter a sum!'));
+  }
+  // Check price is numeric.
+  if (!is_numeric($form_state['values']['price'])) {
+    form_set_error('price', t('Enter only numeric!'));
+  }
+  // Сheck whether the entered payment method.
+  if (!isset($form_state['values']['pay'])) {
+    form_set_error('pay', t('Select your payment option!'));
+  }
+  // Check isset in cart another product.
+  if (!empty($line_item_cart)) {
+    form_set_error('submit', t('Your Cart not empty. Please pay our remove all product in busket'));
+  }
+}
+
+
+/**
+ * Implements hook_form_submit().
+ *
+ * Submit to form pay order.
+ */
+function idevels_finances_order_form_submit($form, &$form_state) {
+  global $user;
+  $node = new stdClass();
+  $node->uid = $user->uid;
+
+  $user_id = $form_state['values']['user_uid'];
+  $m = $form_state['values']['pay'];
+
+  $node->language = 'ru';
+  // Title was changed in idevels_finances_node_insert.
+  $node->title = '';
+  $node->type = 'order';
+  $node->field_metod_oplat[LANGUAGE_NONE][0]['value'] = $form['pay']['#options'][$m];
+  $node->field_price[LANGUAGE_NONE][0]['amount'] = $form_state['values']['price'] * 100;
+  $node->field_price[LANGUAGE_NONE][0]['currency_code'] = 'EUR';
+  node_submit($node);
+  node_save($node);
+
+  $nid = $node->nid;
+  drupal_set_message(t('Now, you are redirected to a payment system. After the payment you will automatically return to our site.'));
+  // Add product to cart user to pay.
+  $node = node_load($node->nid);
+  $field_lang_prod = field_language('node', $node, 'field_product');
+  // Get product id.
+  $product_id = $node->field_product[$field_lang_prod][0]['product_id'];
+  $quantity = 1;
+  // Add product to cart.
+  if ($product = commerce_product_load($product_id)) {
+    $line_item = commerce_product_line_item_new($product, $quantity);
+    // Add to cart carent product and redirect to page checkout.
+    $line_item = commerce_cart_product_add($user_id, $line_item);
+  }
+  // Record to session vars input method.
+  $_SESSION['idevels_payment_transaction'] = $form_state['input']['pay'];
+  // Redirect to page checkout.
+  $form_state['redirect'] = array('checkout');
+}
+
+
+/**
+ * Implements hook_userpoints().
+ */
+function idevels_finances_userpoints($op, $params) {
+  // Created node "order" after add transaction in admin menu.
+  if (arg(3) == 'userpoints' && arg(4) == 'add') {
+    if ($op == 'points after') {
+      $user = user_load($params['uid']);
+      // Created new object node 'order'.
+      $node = new stdClass();
+      $node->type = 'order';
+      node_object_prepare($node);
+      $node->uid = $user->uid;
+      $node->name = $user->name;
+      $node->language = 'und';
+      $node->field_metod_oplat[$node->language][0]['value'] = $params['description'];
+      $node->field_price[$node->language][0]['amount'] = $params['points'] * 100;
+      $node->field_price[$node->language][0]['currency_code'] = 'EUR';
+      $node->field_payed[$node->language][0]['value'] = 1;
+      // Record hash to checking in output.
+      $hash = md5($params['uid'] . $params['points'] . $params['time_stamp']);
+      $node->field_hash[$node->language][0]['value'] = $hash;
+      $node->field_tid[$node->language][0]['value']  = $params['txn_id'];
+      $node->status = 1;
+      $node->promote = 0;
+      $node->revision = 0;
+
+      $node->changed = $_SERVER['REQUEST_TIME'];
+      $node->created = $_SERVER['REQUEST_TIME'];
+      // Validate and submit object node.
+      node_submit($node);
+      node_save($node);
+}
+  }
+}

@@ -1,0 +1,7 @@
+; $Id$
+name = idevels payment
+description = Module for payment userpoints
+dependencies[] = entity
+dependencies[] = commerce
+core = 7.x
+package = idevels
